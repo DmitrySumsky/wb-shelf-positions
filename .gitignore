@@ -1,0 +1,15 @@
+# Снапшоты пересобираются каждым прогоном
+snapshot*.json
+matrix.csv
+*.log
+*.txt
+!requirements.txt
+
+# Ключи сервисных аккаунтов — только через секреты репозитория
+*credentials*.json
+*service*account*.json
+dds-ganza-*.json
+
+__pycache__/
+*.pyc
+.venv/

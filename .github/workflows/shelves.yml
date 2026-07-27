@@ -1,0 +1,43 @@
+name: Позиции в полках конкурентов (WB)
+
+on:
+  schedule:
+    # 04:10 UTC = 07:10 МСК, каждый день
+    - cron: "10 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dest:
+        description: "Регион WB (dest), по умолчанию Москва -1257786"
+        required: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Снять позиции и записать в таблицу
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SOURCE_ID: ${{ secrets.SOURCE_ID }}
+        run: |
+          python to_sheets.py
+
+      - name: Сохранить снапшот как артефакт прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ github.run_number }}
+          path: |
+            snapshot.json
+          if-no-files-found: ignore
+          retention-days: 30
