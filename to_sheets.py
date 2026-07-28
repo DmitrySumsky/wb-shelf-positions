@@ -9,7 +9,8 @@
 конкурентами. Позиции считаются ТОЛЬКО внутри группы.
 
 Листы результата:
-  «Матрица»  — строка = полка конкурента, столбцы = наши бренды. Срез на сегодня.
+  «Матрица»  — строка = полка конкурента, на каждую дату блок из 4 колонок (наши
+               бренды) с датой над ним. Свежая дата — слева, прежние съезжают вправо.
   «Сводка»   — строка = наш артикул: в скольких полках найден, лучшая/средняя/худшая.
   «История»  — строка = пара (наш артикул × конкурент), столбец = дата.
 
@@ -200,10 +201,12 @@ def write_matrix(book, snap: dict, our_brands: list[str]) -> str:
 
         A..D  — Товар | Артикул конкурента | Бренд конкурента | Товаров в полке
         строка 1 — дата над блоком, строка 2 — названия наших брендов
-        каждый прогон добавляет справа блок из len(our_brands) колонок
+        каждый прогон вставляет блок из len(our_brands) колонок СЛЕВА, сразу
+        за фиксированными колонками, и сдвигает прежние даты вправо
 
     Лист НЕ перезаписывается: новые конкуренты дописываются строками вниз,
-    новая дата — блоком вправо. Повторный прогон в тот же день обновляет свой блок.
+    новая дата — блоком слева (самое свежее всегда под рукой, листать вправо
+    не надо). Повторный прогон в тот же день обновляет свой блок на месте.
     """
     nfix = len(MATRIX_FIX)
     nb = len(our_brands)
@@ -229,15 +232,17 @@ def write_matrix(book, snap: dict, our_brands: list[str]) -> str:
     body = values[MATRIX_HEAD_ROWS:]
 
     # Существующие блоки дат: подпись стоит в первой колонке блока.
-    n_blocks = max(0, (len(row2) - nfix + nb - 1) // nb)
+    n_blocks = max(0, (max(len(row1), len(row2)) - nfix + nb - 1) // nb)
     date_col0 = None
     for b in range(n_blocks):
         i = nfix + b * nb
         if i < len(row1) and row1[i].strip() == date:
             date_col0 = i
             break
-    if date_col0 is None:
-        date_col0 = nfix + n_blocks * nb
+
+    date_is_new = date_col0 is None
+    if date_is_new:
+        date_col0 = nfix
 
     # Существующие строки по ключу (товар, артикул конкурента).
     row_of = {}
@@ -255,10 +260,23 @@ def write_matrix(book, snap: dict, our_brands: list[str]) -> str:
             new_fixed.append(e)
             next_row += 1
 
-    need_rows = next_row + 30
-    need_cols = date_col0 + nb + 4
-    if ws.row_count < need_rows or ws.col_count < need_cols:
-        ws.resize(rows=max(need_rows, ws.row_count), cols=max(need_cols, ws.col_count))
+    # Только строки: ширину добирает сама вставка блока ниже. Резать лист по
+    # колонкам тут нельзя — gspread держит устаревший col_count и снёс бы
+    # правый край с прежними датами.
+    if ws.row_count < next_row + 30:
+        ws.resize(rows=next_row + 30, cols=ws.col_count)
+
+    # Новой даты на листе нет — врезаем под неё блок колонок сразу за
+    # фиксированной частью. Google сам сдвигает вправо и данные, и мерджи
+    # прежних дат, поэтому пересобирать старые блоки не нужно.
+    if date_is_new:
+        book.batch_update({"requests": [{"insertDimension": {
+            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                      "startIndex": nfix, "endIndex": nfix + nb},
+            # Наследуем оформление от фиксированных колонок слева, а не от
+            # вчерашнего блока справа: иначе в новый блок переедет вчерашняя
+            # заливка и пустые ячейки остались бы крашеными.
+            "inheritFromBefore": True}}]})
 
     updates = []
 
@@ -309,6 +327,17 @@ def write_matrix(book, snap: dict, our_brands: list[str]) -> str:
                                            "horizontalAlignment": "CENTER"}},
             "fields": "userEnteredFormat(textFormat,wrapStrategy,horizontalAlignment)"}},
     ]
+    # Свежевставленный блок гасим до белого: раскрашиваем ниже только те ячейки,
+    # где сегодня есть значение, а унаследованная заливка иначе осталась бы висеть.
+    if date_is_new:
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": MATRIX_HEAD_ROWS,
+                      "endRowIndex": max(next_row, last),
+                      "startColumnIndex": date_col0, "endColumnIndex": date_col0 + nb},
+            "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                                           "horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment)"}})
+
     # Мердж даты над блоком. Блок целиком лежит правее замороженных колонок,
     # поэтому границу frozenColumnCount не пересекает (иначе Google отдаёт 400).
     if nb > 1:
