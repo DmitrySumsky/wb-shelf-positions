@@ -38,6 +38,16 @@ jobs:
         run: |
           python to_sheets.py
 
+      # Цены независимы от позиций: пишем их, даже если сбор полок упал.
+      - name: Снять цены и записать в таблицу
+        if: always()
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SOURCE_ID: ${{ secrets.SOURCE_ID }}
+        run: |
+          python prices_to_sheets.py
+
       - name: Сохранить снапшот как артефакт прогона
         if: always()
         uses: actions/upload-artifact@v4
@@ -45,5 +55,6 @@ jobs:
           name: snapshot-${{ github.run_number }}
           path: |
             snapshot.json
+            snapshot_prices.json
           if-no-files-found: ignore
           retention-days: 30

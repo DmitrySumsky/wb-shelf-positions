@@ -1,0 +1,38 @@
+name: Цены по артикулам (WB, интрадей)
+
+# Лёгкий срез цен (~15 с) в лист «Цены» — без обхода полок. Дергается
+# cron-job.org несколько раз в день через workflow_dispatch: родному
+# расписанию GitHub доверять время нельзя (см. shelves.yml). Повторный
+# запуск в тот же день обновляет колонку даты на месте, историю не раздувает.
+on:
+  workflow_dispatch:
+    inputs:
+      dest:
+        description: "Регион WB (dest), по умолчанию Москва -1257786"
+        required: false
+
+concurrency:
+  group: shelf-prices
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Снять цены и записать в таблицу
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SOURCE_ID: ${{ secrets.SOURCE_ID }}
+        run: |
+          python prices_to_sheets.py
