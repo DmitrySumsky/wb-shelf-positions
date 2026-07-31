@@ -47,6 +47,7 @@ import argparse
 import json
 import os
 import re
+import time
 from datetime import datetime
 
 import gspread
@@ -88,6 +89,33 @@ BANDS = [
 ]
 COLOR_DEEP = {"red": 0.96, "green": 0.80, "blue": 0.80}
 COLOR_NONE = {"red": 0.93, "green": 0.93, "blue": 0.93}
+
+
+def install_retries(tries: int = 5) -> None:
+    """Ретрай 429/5xx на все запросы gspread.
+
+    Своего backoff у gspread нет, а Google отдаёт транзиентные ошибки: облачный
+    прогон 31.07.2026 упал на `500 Internal error` при чтении метаданных — уже
+    ПОСЛЕ записи значений, то есть данные легли, а оформление нет, и шаг
+    отрапортовал провалом. Патчим точку, через которую ходят все вызовы.
+    """
+    import gspread.http_client as hc
+
+    original = hc.HTTPClient.request
+
+    def request(self, method, endpoint, **kwargs):
+        for attempt in range(tries):
+            try:
+                return original(self, method, endpoint, **kwargs)
+            except gspread.exceptions.APIError as exc:
+                code = getattr(getattr(exc, "response", None), "status_code", None)
+                if code in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                    pause = min(30, 3 * 2 ** attempt)
+                    sp.log(f"  Sheets API {code} — повтор через {pause} с")
+                    time.sleep(pause)
+                    continue
+                raise
+    hc.HTTPClient.request = request
 
 
 # ------------------------------------------------------------------ чтение блоков
@@ -388,6 +416,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
     args = ap.parse_args()
 
+    install_retries()
     client = ts.get_client(args.creds)
     book = client.open_by_key(args.sheet_id)
     groups, rows = read_blocks(book)
