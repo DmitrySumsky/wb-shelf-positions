@@ -48,6 +48,16 @@ jobs:
         run: |
           python prices_to_sheets.py
 
+      # Книга VEXOR (автохимия) — свой источник строк и свой лист «Полки».
+      # Независима от двух шагов выше: падение одного не должно ронять остальные.
+      - name: Полки в книге VEXOR
+        if: always()
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
+        run: |
+          python vexor_shelves.py
+
       - name: Сохранить снапшот как артефакт прогона
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,5 +66,6 @@ jobs:
           path: |
             snapshot.json
             snapshot_prices.json
+            snapshot_vexor.json
           if-no-files-found: ignore
           retention-days: 30
