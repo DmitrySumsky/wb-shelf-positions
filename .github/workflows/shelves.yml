@@ -58,6 +58,17 @@ jobs:
         run: |
           python vexor_shelves.py
 
+      # Отдельная книга бренда NATURI: список строк ведёт Артур в самом листе
+      # «Полки», скрипт только дописывает колонку за сегодня.
+      - name: Полки в книге NATURI
+        if: always()
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          NATURI_SHEET_ID: ${{ secrets.NATURI_SHEET_ID }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          python naturi_shelves.py
+
       - name: Сохранить снапшот как артефакт прогона
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,5 +78,6 @@ jobs:
             snapshot.json
             snapshot_prices.json
             snapshot_vexor.json
+            snapshot_naturi.json
           if-no-files-found: ignore
           retention-days: 30
