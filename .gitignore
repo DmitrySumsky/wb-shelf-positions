@@ -13,3 +13,6 @@ dds-ganza-*.json
 __pycache__/
 *.pyc
 .venv/
+
+# Карта «бренд → scriptId» для кнопки в книгах (чужие проекты, не код)
+apps_script/deployed.json

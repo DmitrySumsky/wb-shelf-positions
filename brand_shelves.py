@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Отдельная книга бренда: позиции карточек NATURI в полках конкурентов.
+Отдельная книга бренда: позиции карточек бренда в полках конкурентов.
 
 Задача Артура от 04.08.2026: разнести бренды по отдельным таблицам. Образец —
 лист «Натури пример» в общей книге «Анализ конкурентов ВБ авто»: плоский список,
 где строка = полка (карточка конкурента) внутри группы «наш товар», а в колонках
 дат стоит позиция НАШЕЙ карточки в этой полке, свежая дата слева.
+
+Брендов четыре, книга у каждого своя, а список конкурентов общий: он один и тот
+же в каждой группе, меняется только контрольная карточка. Поэтому лист бренда
+заводится из того же образца — строки бренда поднимаются в начало своей группы,
+первая из них (та, у которой «Тип конкурента» совпадает с типом группы) и есть
+контрольная карточка, остальные строки остаются полками в прежнем порядке.
 
 Раскладка листа «Полки» книги-приёмника:
     A  Товар                 \\
@@ -35,8 +41,9 @@ A–G, дописывает колонку за сегодня и больше �
                           «ошибка сбора» = полка не отдалась (это НЕ «нас там нет»);
     строка нашей карточки — «N из M»: в скольких полках группы нашлись.
 
-Запуск: шагом в shelves.yml (08:00 МСК) либо руками:
-    python naturi_shelves.py --creds ключ.json
+Запуск: шагом в shelves.yml (08:00 МСК), кнопкой в самой книге (workflow
+brand-shelves.yml) либо руками:
+    python brand_shelves.py --brand all --creds ключ.json
 """
 
 from __future__ import annotations
@@ -53,15 +60,30 @@ import shelf_positions as sp
 import to_sheets as ts
 from vexor_shelves import install_retries
 
-# Книга «Анализ конкурентов Naturi». Не секрет: ID есть в памяти проекта.
-NATURI_SHEET_ID = "1XLby8VEOKQtuXrm4OCiQ-PFiTMXfaUe7gF054feoh_0"
+# Книги брендов (папка «Анализ конкурентов» на Drive). ID не секрет.
+# `aliases` — как бренд написан в колонке «Бренд конкурента» образца; сравнение
+# точное по нормализованной строке, иначе «Health Form» поймал бы «HealthIs».
+BRANDS: dict[str, dict] = {
+    "NATURI": {"sheet_id": "1XLby8VEOKQtuXrm4OCiQ-PFiTMXfaUe7gF054feoh_0",
+               "aliases": ["NATURI"]},
+    "SUNSHINE": {"sheet_id": "1xustRP7HtPHNiZTRnGZ1FU7T_nPLnyeP9PD4VxUvw1o",
+                 "aliases": ["Sunshine Nutrition", "SUNSHINE", "Sunshine"]},
+    "Health Form": {"sheet_id": "1KxORIJezgLt85dLl6D_wHnsRYfNMwn1as9S_L32Swvc",
+                    "aliases": ["Health Form", "HealthForm"]},
+    "4ME": {"sheet_id": "1slwJjO4mEn7umu6vH0bMbzuWGuAkfeVdekzTUExj-Ro",
+            "aliases": ["4Me Nutrition", "4ME", "4Me"]},
+}
 
 # Откуда взять раскладку при самом первом запуске (книга «Анализ конкурентов ВБ авто»).
 TEMPLATE_SHEET_ID = "1hqCt4QnCnqrLrRUZD3hSCuDd3k-2PFpaZdHNaxE4Nzk"
 TEMPLATE_TAB = "Натури пример"
 
 SHEET_DST = "Полки"
-OUR_BRAND = "NATURI"
+
+COLOR_CONTROL = {"red": 0.42, "green": 0.66, "blue": 0.31}   # контрольная карточка
+COLOR_OURS = {"red": 0.85, "green": 0.92, "blue": 0.83}      # прочие карточки бренда
+WHITE = {"red": 1, "green": 1, "blue": 1}
+COL_WIDTHS = [330, 115, 150, 140, 110, 80, 100]              # A..G
 
 FIX_COLS = ["Товар", "Артикул конкурента", "Бренд конкурента", "~ Выручка конкурента",
             "Тип конкурента", "Прогрев", "Прогрев к-во"]
@@ -104,33 +126,116 @@ def norm_date(text: str) -> str | None:
 
 # --------------------------------------------------------- лист: завести / прочитать
 
-def bootstrap(client, book, template_id: str, template_tab: str):
-    """Первый запуск: копируем раскладку образца вместе с оформлением.
+def norm_brand(text: str) -> str:
+    return " ".join(str(text).split()).strip().lower()
 
-    Копия делается средствами Google (`copyTo`), а не переписыванием значений, —
-    так переезжают ширины колонок, заливка строк наших карточек и жёлтая колонка
-    «Тип конкурента». Пустые колонки-даты образца сносим: свои даты скрипт
-    заведёт сам, а чужие пустые только сбивали бы счёт истории.
+
+def reorder_for_brand(rows: list[list[str]], aliases: list[str]) -> tuple[list[list[str]], int]:
+    """Строки образца → строки листа бренда: его карточки в начале своей группы.
+
+    Список конкурентов у всех брендов общий, разная только контрольная карточка.
+    В образце (он нарисован под NATURI) карточки бренда стоят где-то в середине
+    группы — поднимаем их наверх, а контрольной делаем ту, у которой «Тип
+    конкурента» совпадает с типом группы (тип группы = тип её первой строки в
+    образце). Совпадения нет — берём первую карточку бренда.
+    """
+    ours = {norm_brand(a) for a in aliases}
+    out: list[list[str]] = []
+    controls = 0
+
+    block: list[list[str]] = []
+    def flush() -> None:
+        nonlocal controls
+        if not block:
+            return
+        kind = block[0][4] if len(block[0]) > 4 else ""
+        mine = [r for r in block if norm_brand(r[2]) in ours]
+        rest = [r for r in block if norm_brand(r[2]) not in ours]
+        if mine:
+            same = [r for r in mine if (r[4] if len(r) > 4 else "") == kind]
+            control = same[0] if same else mine[0]
+            mine = [control] + [r for r in mine if r is not control]
+            controls += 1
+        out.extend(mine + rest)
+        block.clear()
+
+    product = ""
+    for raw in rows:
+        r = [str(x).strip() for x in (list(raw) + [""] * NFIX)[:NFIX]]
+        if not any(r):
+            flush()
+            out.append(r)
+            product = ""
+            continue
+        if r[0] and r[0] != product:
+            flush()
+            product = r[0]
+        r[0] = product          # товар дублируем в каждой строке: после
+        block.append(r)         # перестановки первая строка группы уже другая
+    flush()
+    return out, controls
+
+
+def bootstrap(client, book, brand: str, template_id: str, template_tab: str):
+    """Первый запуск: лист бренда из образца «Натури пример».
+
+    Значения переписываются (строки бренда переезжают в начало своих групп),
+    поэтому оформление задаём сами: ширины, шапка, заморозка и заливка строк
+    наших карточек — тёмно-зелёная у контрольной, светло-зелёная у остальных.
+    Дальше лист ведёт человек, и скрипт эти колонки больше не трогает.
     """
     src = client.open_by_key(template_id).worksheet(template_tab)
-    sp.log(f"Листа «{SHEET_DST}» в книге нет — копирую раскладку из «{template_tab}»")
-    info = src.copy_to(book.id)
-    ws = book.get_worksheet_by_id(info["sheetId"])
-    ws.update_title(SHEET_DST)
+    sp.log(f"Листа «{SHEET_DST}» в книге нет — собираю из «{template_tab}» под {brand}")
+    values = src.get_all_values()
+    head = [str(x).strip() for x in values[0]][:NFIX]
+    body, controls = reorder_for_brand(values[1:], BRANDS[brand]["aliases"])
+    if not controls:
+        raise SystemExit(f"В образце нет ни одной карточки бренда {brand} — нечего мерить")
+
+    ws = book.add_worksheet(title=SHEET_DST, rows=len(body) + 200, cols=NFIX + 10)
     ws.update_index(0)
-    if ws.col_count > NFIX:
-        # Заморозку снимаем ДО удаления: у образца заморожены как раз A–G, а
-        # Google отвечает «not possible to delete all non-frozen columns», если
-        # после удаления остались бы одни замороженные. Ставим её обратно ниже.
-        book.batch_update({"requests": [
-            {"updateSheetProperties": {
-                "properties": {"sheetId": ws.id,
-                               "gridProperties": {"frozenColumnCount": 0}},
-                "fields": "gridProperties.frozenColumnCount"}},
-            {"deleteDimension": {"range": {
-                "sheetId": ws.id, "dimension": "COLUMNS",
-                "startIndex": NFIX, "endIndex": ws.col_count}}},
-        ]})
+    ws.update(values=[head] + body, range_name=f"A1:{col_letter(NFIX)}{len(body) + 1}",
+              value_input_option="USER_ENTERED")
+
+    ours = {norm_brand(a) for a in BRANDS[brand]["aliases"]}
+    reqs = [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": ws.id,
+                           "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 3}},
+            "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"}},
+        {"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": NFIX},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True},
+                                           "wrapStrategy": "WRAP",
+                                           "horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat(textFormat,wrapStrategy,horizontalAlignment)"}},
+    ]
+    for i, w in enumerate(COL_WIDTHS):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize"}})
+
+    product = ""
+    for i, r in enumerate(body, start=2):
+        if not any(r):
+            product = ""
+            continue
+        first = r[0] != product
+        product = r[0]
+        if norm_brand(r[2]) not in ours:
+            continue
+        color = COLOR_CONTROL if first else COLOR_OURS
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": i - 1, "endRowIndex": i,
+                      "startColumnIndex": 0, "endColumnIndex": NFIX},
+            "cell": {"userEnteredFormat": {"backgroundColor": color}},
+            "fields": "userEnteredFormat.backgroundColor"}})
+
+    for i in range(0, len(reqs), 300):
+        book.batch_update({"requests": reqs[i:i + 300]})
+    sp.log(f"Лист заведён: строк {len(body)}, контрольных карточек {controls}")
     return ws
 
 
@@ -161,7 +266,7 @@ def read_layout(head: list[str]) -> dict:
             "brand": col_of(FIX_COLS[2], 2)}
 
 
-def read_sheet(ws) -> tuple[list[dict], dict, list[list[str]]]:
+def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]]]:
     """Лист → (строки, раскладка, сырые значения).
 
     Строка: {"row", "kind": "our"|"shelf"|"skip", "art", "block"}.
@@ -179,6 +284,7 @@ def read_sheet(ws) -> tuple[list[dict], dict, list[list[str]]]:
     lay = read_layout(head)
     ic, ia, ib = lay["product"], lay["art"], lay["brand"]
     width = max(lay["nfix"], ic, ia, ib) + 1
+    ours = {norm_brand(a) for a in aliases}
 
     rows: list[dict] = []
     block = None
@@ -197,7 +303,7 @@ def read_sheet(ws) -> tuple[list[dict], dict, list[list[str]]]:
         elif block is None:
             rows.append({"row": i, "kind": "skip", "art": "", "block": None})
             continue
-        is_our = brand.upper() == OUR_BRAND.upper()
+        is_our = norm_brand(brand) in ours
         # Наша карточка группы — первая наша строка блока. Остальные наши карточки
         # (в образце светло-зелёные) считаются полками: в них тоже интересно стоять.
         kind = "shelf"
@@ -379,11 +485,58 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
 
 # ------------------------------------------------------------------------- main
 
+def run_brand(client, brand: str, args) -> str:
+    """Один бренд: завести лист при необходимости, обойти полки, дописать колонку."""
+    cfg = BRANDS[brand]
+    sp.log(f"=== {brand} ===")
+    book = client.open_by_key(os.environ.get(f"SHEET_ID_{brand.upper().replace(' ', '_')}")
+                              or cfg["sheet_id"])
+    try:
+        ws = book.worksheet(SHEET_DST)
+    except gspread.WorksheetNotFound:
+        if args.dry_run:
+            return f"{brand}: листа нет, dry-run — не завожу"
+        ws = bootstrap(client, book, brand, args.template_id, args.template_tab)
+
+    rows, lay, values = read_sheet(ws, cfg["aliases"])
+    groups = build_groups(rows)
+    shelves = {c for g in groups for c in g["competitors"]}
+    sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
+           f"уникальных полок к обходу {len(shelves)}, "
+           f"фиксированных колонок {lay['nfix']}, дат в истории {len(lay['date_at'])}")
+
+    snap_path = args.snapshot_in or f"snapshot_{brand.lower().replace(' ', '_')}.json"
+    if args.snapshot_in:
+        with open(args.snapshot_in, encoding="utf-8") as f:
+            snapshot = json.load(f)
+    else:
+        snapshot = sp.run_groups(groups, dest=args.dest, workers=args.workers,
+                                 max_positions=args.max_positions)
+        if args.save_snapshots:
+            with open(snap_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            sp.log(f"Снапшот сохранён: {snap_path}")
+
+    vals = cell_values(snapshot, groups, rows)
+    nums = [v for v in vals.values() if isinstance(v, int)]
+    stat = (f"позиций {len(nums)}, нас нет в полке "
+            f"{sum(1 for v in vals.values() if v == NOT_IN_SHELF)}, "
+            f"нет карточки {sum(1 for v in vals.values() if v == STATE_GONE)}, "
+            f"ошибок сбора {sum(1 for v in vals.values() if v == STATE_FAIL)}"
+            + (f", медиана {sorted(nums)[len(nums) // 2]}" if nums else ""))
+    sp.log(stat)
+
+    if args.dry_run:
+        return f"{brand}: dry-run, {stat}"
+    date, ndates = write_column(book, ws, lay, values, vals, datetime.now(sp.MSK))
+    return f"{brand}: колонка за {date} записана ({stat}; дат в истории {ndates})"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Позиции NATURI в полках → лист «Полки» отдельной книги бренда")
-    ap.add_argument("--sheet-id",
-                    default=os.environ.get("NATURI_SHEET_ID") or NATURI_SHEET_ID)
+        description="Позиции бренда в полках → лист «Полки» его отдельной книги")
+    ap.add_argument("--brand", default="all",
+                    help="NATURI | SUNSHINE | 'Health Form' | 4ME | all")
     ap.add_argument("--template-id",
                     default=os.environ.get("SHEET_ID") or TEMPLATE_SHEET_ID)
     ap.add_argument("--template-tab", default=TEMPLATE_TAB)
@@ -391,53 +544,36 @@ def main() -> None:
     ap.add_argument("--dest", type=int, default=sp.DEST_MOSCOW)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--max-positions", type=int, default=600)
-    ap.add_argument("--save-snapshot", default="snapshot_naturi.json")
+    ap.add_argument("--save-snapshots", action="store_true", default=True)
     ap.add_argument("--snapshot-in", default=None,
                     help="взять готовый снапшот вместо обхода полок (отладка)")
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
     args = ap.parse_args()
 
+    if args.brand.lower() == "all":
+        brands = list(BRANDS)
+    else:
+        match = [b for b in BRANDS if b.lower() == args.brand.strip().lower()]
+        if not match:
+            raise SystemExit(f"Неизвестный бренд {args.brand!r}; известны: {list(BRANDS)}")
+        brands = match
+
     install_retries()
     client = ts.get_client(args.creds)
-    book = client.open_by_key(args.sheet_id)
-    try:
-        ws = book.worksheet(SHEET_DST)
-    except gspread.WorksheetNotFound:
-        ws = bootstrap(client, book, args.template_id, args.template_tab)
 
-    rows, lay, values = read_sheet(ws)
-    groups = build_groups(rows)
-    shelves = {c for g in groups for c in g["competitors"]}
-    sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
-           f"наших карточек {len(groups)}, уникальных полок к обходу {len(shelves)}, "
-           f"фиксированных колонок {lay['nfix']}, дат в истории {len(lay['date_at'])}")
-
-    if args.snapshot_in:
-        with open(args.snapshot_in, encoding="utf-8") as f:
-            snapshot = json.load(f)
-    else:
-        snapshot = sp.run_groups(groups, dest=args.dest, workers=args.workers,
-                                 max_positions=args.max_positions)
-        if args.save_snapshot:
-            with open(args.save_snapshot, "w", encoding="utf-8") as f:
-                json.dump(snapshot, f, ensure_ascii=False, indent=2)
-            sp.log(f"Снапшот сохранён: {args.save_snapshot}")
-
-    vals = cell_values(snapshot, groups, rows)
-    nums = [v for v in vals.values() if isinstance(v, int)]
-    sp.log(f"Позиций найдено: {len(nums)}; нас нет в полке: "
-           f"{sum(1 for v in vals.values() if v == NOT_IN_SHELF)}; "
-           f"нет карточки: {sum(1 for v in vals.values() if v == STATE_GONE)}; "
-           f"ошибок сбора: {sum(1 for v in vals.values() if v == STATE_FAIL)}"
-           + (f"; медиана позиции {sorted(nums)[len(nums) // 2]}" if nums else ""))
-
-    if args.dry_run:
-        print("dry-run: в таблицу не пишу.")
-        return
-
-    date, ndates = write_column(book, ws, lay, values, vals, datetime.now(sp.MSK))
-    print(f"Готово: лист «{SHEET_DST}», колонка за {date} записана "
-          f"(строк {len(values) - 1}, дат в истории {ndates}).")
+    results, failed = [], []
+    for brand in brands:
+        try:
+            results.append(run_brand(client, brand, args))
+        except Exception as exc:
+            # Один бренд не должен ронять остальные: книга может быть закрыта,
+            # лист переименован, полки не отдаться — остальные три обновятся.
+            sp.log(f"ОШИБКА по бренду {brand}: {exc.__class__.__name__}: {exc}")
+            failed.append(brand)
+    for line in results:
+        print("Готово:", line)
+    if failed:
+        raise SystemExit(f"Бренды с ошибкой: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

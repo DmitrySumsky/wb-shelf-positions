@@ -58,16 +58,16 @@ jobs:
         run: |
           python vexor_shelves.py
 
-      # Отдельная книга бренда NATURI: список строк ведёт Артур в самом листе
-      # «Полки», скрипт только дописывает колонку за сегодня.
-      - name: Полки в книге NATURI
+      # Отдельные книги брендов (NATURI, SUNSHINE, Health Form, 4ME): список
+      # строк ведёт Артур в самом листе «Полки», скрипт только дописывает
+      # колонку за сегодня. Один упавший бренд не роняет остальные.
+      - name: Полки в книгах брендов
         if: always()
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-          NATURI_SHEET_ID: ${{ secrets.NATURI_SHEET_ID }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
         run: |
-          python naturi_shelves.py
+          python brand_shelves.py --brand all
 
       - name: Сохранить снапшот как артефакт прогона
         if: always()
@@ -79,5 +79,8 @@ jobs:
             snapshot_prices.json
             snapshot_vexor.json
             snapshot_naturi.json
+            snapshot_sunshine.json
+            snapshot_health_form.json
+            snapshot_4me.json
           if-no-files-found: ignore
           retention-days: 30

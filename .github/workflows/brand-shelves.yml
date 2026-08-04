@@ -1,0 +1,50 @@
+name: Полки по брендам (кнопка в таблице)
+
+# Дёргается кнопкой из самой книги бренда (Apps Script → workflow_dispatch).
+# Ежедневный прогон живёт отдельно — шагом в shelves.yml в 08:00 МСК.
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: "NATURI | SUNSHINE | Health Form | 4ME | all"
+        required: false
+        default: "all"
+
+# Два нажатия подряд не должны обходить полки параллельно, но и отменять
+# начатый прогон не надо: он всё равно допишет колонку за сегодня.
+concurrency:
+  group: brand-shelves
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Снять позиции и записать в книги брендов
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          # Через переменную, а не подстановкой в командную строку: значение
+          # приходит снаружи и в шелл его подставлять нельзя.
+          BRAND: ${{ inputs.brand }}
+        run: |
+          python brand_shelves.py --brand "${BRAND:-all}"
+
+      - name: Сохранить снапшоты как артефакт прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-brands-${{ github.run_number }}
+          path: snapshot_*.json
+          if-no-files-found: ignore
+          retention-days: 30
