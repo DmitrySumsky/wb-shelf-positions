@@ -318,6 +318,23 @@ def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]
     return rows, lay, values
 
 
+def misplaced_controls(rows: list[dict]) -> list[str]:
+    """Группы, где контрольная карточка стоит не первой строкой.
+
+    Контрольная — первая строка группы С НАШИМ брендом; если выше неё в группе
+    стоят конкуренты, «N из M» окажется в середине блока, а глазами это читается
+    как съехавшая строка. Сами строки не переставляем (их ведёт человек), только
+    говорим, где непорядок.
+    """
+    first: dict[str, int] = {}
+    for r in rows:
+        if r["block"] and r["block"] not in first:
+            first[r["block"]] = r["row"]
+    return [f"{r['block']}: контрольная в строке {r['row']}, "
+            f"а группа начинается со строки {first[r['block']]}"
+            for r in rows if r["kind"] == "our" and r["row"] != first[r["block"]]]
+
+
 def build_groups(rows: list[dict]) -> list[dict]:
     """Строки листа → группы для sp.run_groups."""
     order: list[str] = []
@@ -353,6 +370,7 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
     failed = set(snapshot.get("failed_shelves", []))
     missing = set(snapshot.get("missing_shelves", []))
     positions = snapshot.get("positions", {})
+    visited = set(snapshot.get("shelves", {}))     # какие полки вообще обходили
     our_of = {g["product"]: str(g["ours"][0]) for g in groups}
 
     out: dict[int, object] = {}
@@ -360,11 +378,18 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
         if r["kind"] == "skip":
             continue
         our = our_of.get(r["block"])
-        if not our:
+        if not our or our not in positions:
+            # Контрольной карточки в снапшоте нет (группу завели уже после
+            # обхода) — колонку за сегодня по ней не заполняем вообще.
             continue
         if r["kind"] == "shelf":
             art = r["art"]
-            if art in failed:
+            if visited and art not in visited:
+                # Строку добавили руками уже после обхода — данных за сегодня по
+                # ней просто нет. Оставляем пусто: «—» означало бы «проверили и
+                # нас там нет», а мы её не проверяли.
+                out[r["row"]] = ""
+            elif art in failed:
                 out[r["row"]] = STATE_FAIL
             elif art in missing:
                 out[r["row"]] = STATE_GONE
@@ -504,6 +529,8 @@ def run_brand(client, brand: str, args) -> str:
     sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
            f"уникальных полок к обходу {len(shelves)}, "
            f"фиксированных колонок {lay['nfix']}, дат в истории {len(lay['date_at'])}")
+    for line in misplaced_controls(rows):
+        sp.log(f"ВНИМАНИЕ, карточка бренда не первой строкой группы — {line}")
 
     snap_path = args.snapshot_in or f"snapshot_{brand.lower().replace(' ', '_')}.json"
     if args.snapshot_in:
@@ -516,6 +543,19 @@ def run_brand(client, brand: str, args) -> str:
             with open(snap_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)
             sp.log(f"Снапшот сохранён: {snap_path}")
+
+    if not args.dry_run:
+        # Обход полок идёт ~4 минуты, и всё это время Артур может править строки.
+        # Колонка пишется по НОМЕРАМ строк, поэтому раскладку перечитываем прямо
+        # перед записью: иначе значения лягут на старую нумерацию и разъедутся
+        # (так вышло 04.08 в книге 4ME). Полки, появившиеся после обхода,
+        # остаются пустыми — их сегодня не проверяли.
+        fresh_rows, fresh_lay, fresh_values = read_sheet(ws, cfg["aliases"])
+        if len(fresh_values) != len(values) or [r["art"] for r in fresh_rows] != [
+                r["art"] for r in rows]:
+            sp.log("Строки листа изменились за время обхода — пишу по свежей раскладке")
+        rows, lay, values = fresh_rows, fresh_lay, fresh_values
+        groups = build_groups(rows)
 
     vals = cell_values(snapshot, groups, rows)
     nums = [v for v in vals.values() if isinstance(v, int)]
