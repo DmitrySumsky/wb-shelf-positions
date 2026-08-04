@@ -134,46 +134,82 @@ def bootstrap(client, book, template_id: str, template_tab: str):
     return ws
 
 
-def read_sheet(ws) -> tuple[list[dict], list[str], list[list[str]]]:
-    """Лист → (строки, даты слева направо, сырые значения).
+def read_layout(head: list[str]) -> dict:
+    """Шапка → раскладка листа: где фиксированные колонки и где какая дата.
+
+    Ничего не зашито по буквам: границей служит ПЕРВАЯ колонка-дата, а нужные
+    поля ищутся по названию. Так лист переживает и добавленную человеком
+    колонку («Комментарий»), и перестановку колонок местами.
+    """
+    date_at: dict[str, int] = {}          # дата → индекс колонки (0-based)
+    for i, cell in enumerate(head):
+        d = norm_date(cell)
+        if d and d not in date_at:
+            date_at[d] = i
+    nfix = min(date_at.values()) if date_at else len([h for h in head if h])
+    nfix = max(nfix, 3)                   # A–C нужны всегда
+
+    def col_of(title: str, default: int) -> int:
+        for i, cell in enumerate(head[:nfix]):
+            if cell.lower() == title.lower():
+                return i
+        return default
+
+    return {"nfix": nfix, "date_at": date_at,
+            "product": col_of(FIX_COLS[0], 0),
+            "art": col_of(FIX_COLS[1], 1),
+            "brand": col_of(FIX_COLS[2], 2)}
+
+
+def read_sheet(ws) -> tuple[list[dict], dict, list[list[str]]]:
+    """Лист → (строки, раскладка, сырые значения).
 
     Строка: {"row", "kind": "our"|"shelf"|"skip", "art", "block"}.
+
+    Строки Артур правит руками в любой момент: вставленный конкурент просто
+    появляется в разборе следующим прогоном и с этого дня заполняется, а прежние
+    даты у него остаются пустыми. Товар в колонке A можно не дублировать —
+    пустая A наследует группу строки выше (так делают, когда вставляют строку
+    внутрь блока).
     """
     values = ws.get_all_values()
     if not values:
         raise SystemExit(f"Лист «{SHEET_DST}» пуст")
     head = [str(x).strip() for x in values[0]]
-    if head[:2] != FIX_COLS[:2]:
-        raise SystemExit(f"Шапка «{SHEET_DST}» не та, что ожидалась: {head[:NFIX]}")
-
-    dates: list[str] = []
-    for i in range(NFIX, len(head)):
-        d = norm_date(head[i])
-        if d and d not in dates:
-            dates.append(d)
+    lay = read_layout(head)
+    ic, ia, ib = lay["product"], lay["art"], lay["brand"]
+    width = max(lay["nfix"], ic, ia, ib) + 1
 
     rows: list[dict] = []
     block = None
     block_has_our = set()
     for i, raw in enumerate(values[1:], start=2):
-        cells = [str(x).strip() for x in (list(raw) + [""] * NFIX)[:NFIX]]
-        product, art, brand = cells[0], cells[1], cells[2]
-        if not product:
+        cells = [str(x).strip() for x in (list(raw) + [""] * width)[:width]]
+        product, art, brand = cells[ic], cells[ia], cells[ib]
+        if not product and not art and not brand:
+            # Пустая строка — конец блока: следующий артикул без товара в A
+            # не должен приклеиться к группе, стоящей выше через разрыв.
+            rows.append({"row": i, "kind": "skip", "art": "", "block": None})
+            block = None
+            continue
+        if product:
+            block = product
+        elif block is None:
             rows.append({"row": i, "kind": "skip", "art": "", "block": None})
             continue
-        if product != block:
-            block = product
         is_our = brand.upper() == OUR_BRAND.upper()
         # Наша карточка группы — первая наша строка блока. Остальные наши карточки
         # (в образце светло-зелёные) считаются полками: в них тоже интересно стоять.
         kind = "shelf"
-        if is_our and block not in block_has_our:
+        if not art.isdigit():
+            # Артикул не заполнен (в образце так у наливной L-Carnitine) — строка
+            # не полка и не наша карточка; блок ещё может получить нашу ниже.
+            kind = "skip"
+        elif is_our and block not in block_has_our:
             kind = "our"
             block_has_our.add(block)
-        if not art.isdigit():
-            kind = "skip"
         rows.append({"row": i, "kind": kind, "art": art, "block": block})
-    return rows, dates, values
+    return rows, lay, values
 
 
 def build_groups(rows: list[dict]) -> list[dict]:
@@ -239,29 +275,33 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
 
 # ----------------------------------------------------------------------- запись
 
-def write_column(book, ws, rows: list[dict], dates: list[str], values: list[list[str]],
+def write_column(book, ws, lay: dict, values: list[list[str]],
                  today_vals: dict[int, object], when: datetime) -> tuple[str, int]:
     """Колонка за сегодня. Даты левее — свежая слева, прежние съезжают вправо.
 
-    Колонки A–G не трогаем вообще: их ведёт человек, и любое переписывание
-    затёрло бы его правки и раскраску.
+    Фиксированные колонки не трогаем вообще: их ведёт человек, и любое
+    переписывание затёрло бы его правки и раскраску. Колонка ищется по её
+    фактическому индексу в шапке, а не по порядковому номеру среди дат, —
+    иначе вставленная человеком колонка сдвинула бы запись на соседнюю дату.
     """
     today = when.strftime("%d.%m")
     nrows = len(values)
+    nfix = lay["nfix"]
 
-    if today in dates:
-        col = NFIX + 1 + dates.index(today)          # повторный прогон в тот же день
+    if today in lay["date_at"]:
+        col = lay["date_at"][today] + 1              # повторный прогон в тот же день
+        ndates = len(lay["date_at"])
     else:
-        col = NFIX + 1
-        if ws.col_count < NFIX + len(dates) + 1:
-            ws.resize(rows=ws.row_count, cols=NFIX + len(dates) + 4)
-        # inheritFromBefore=True — оформление берётся из колонки G слева, а не из
-        # вчерашней даты справа: иначе в свежую колонку переехала бы её заливка.
+        col = nfix + 1
+        if ws.col_count < nfix + len(lay["date_at"]) + 1:
+            ws.resize(rows=ws.row_count, cols=nfix + len(lay["date_at"]) + 4)
+        # inheritFromBefore=True — оформление берётся из колонки слева (последней
+        # фиксированной), а не из вчерашней даты: иначе переехала бы её заливка.
         book.batch_update({"requests": [{"insertDimension": {
             "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                      "startIndex": NFIX, "endIndex": NFIX + 1},
+                      "startIndex": nfix, "endIndex": nfix + 1},
             "inheritFromBefore": True}}]})
-        dates = [today] + dates
+        ndates = len(lay["date_at"]) + 1
 
     letter = col_letter(col)
     column = [[today_vals.get(i, "")] for i in range(2, nrows + 1)]
@@ -269,16 +309,15 @@ def write_column(book, ws, rows: list[dict], dates: list[str], values: list[list
     ws.update(values=column, range_name=f"{letter}2:{letter}{nrows}",
               value_input_option="USER_ENTERED")
 
-    ndates = len(dates)
     reqs: list[dict] = []
     # Хвост истории глубже KEEP_DATES сносим — иначе лист растёт вправо без конца.
     if ndates > KEEP_DATES:
         reqs.append({"deleteDimension": {"range": {
             "sheetId": ws.id, "dimension": "COLUMNS",
-            "startIndex": NFIX + KEEP_DATES, "endIndex": NFIX + ndates}}})
+            "startIndex": nfix + KEEP_DATES, "endIndex": nfix + ndates}}})
         ndates = KEEP_DATES
 
-    last_col = NFIX + ndates
+    last_col = nfix + ndates
     reqs += [
         {"updateSheetProperties": {
             "properties": {"sheetId": ws.id,
@@ -287,18 +326,18 @@ def write_column(book, ws, rows: list[dict], dates: list[str], values: list[list
             "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"}},
         {"repeatCell": {
             "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
-                      "startColumnIndex": NFIX, "endColumnIndex": last_col},
+                      "startColumnIndex": nfix, "endColumnIndex": last_col},
             "cell": {"userEnteredFormat": {"textFormat": {"bold": True},
                                            "horizontalAlignment": "CENTER"}},
             "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}},
         {"repeatCell": {
             "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": nrows,
-                      "startColumnIndex": NFIX, "endColumnIndex": last_col},
+                      "startColumnIndex": nfix, "endColumnIndex": last_col},
             "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
             "fields": "userEnteredFormat.horizontalAlignment"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                      "startIndex": NFIX, "endIndex": last_col},
+                      "startIndex": nfix, "endIndex": last_col},
             "properties": {"pixelSize": 60}, "fields": "pixelSize"}},
     ]
 
@@ -313,7 +352,7 @@ def write_column(book, ws, rows: list[dict], dates: list[str], values: list[list
             reqs.append({"deleteConditionalFormatRule": {"sheetId": ws.id, "index": k}})
 
     rng = {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": nrows,
-           "startColumnIndex": NFIX, "endColumnIndex": last_col}
+           "startColumnIndex": nfix, "endColumnIndex": last_col}
     prev = 0
     for limit, color in BANDS:
         reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
@@ -366,12 +405,12 @@ def main() -> None:
     except gspread.WorksheetNotFound:
         ws = bootstrap(client, book, args.template_id, args.template_tab)
 
-    rows, dates, values = read_sheet(ws)
+    rows, lay, values = read_sheet(ws)
     groups = build_groups(rows)
     shelves = {c for g in groups for c in g["competitors"]}
     sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
            f"наших карточек {len(groups)}, уникальных полок к обходу {len(shelves)}, "
-           f"дат в истории {len(dates)}")
+           f"фиксированных колонок {lay['nfix']}, дат в истории {len(lay['date_at'])}")
 
     if args.snapshot_in:
         with open(args.snapshot_in, encoding="utf-8") as f:
@@ -396,7 +435,7 @@ def main() -> None:
         print("dry-run: в таблицу не пишу.")
         return
 
-    date, ndates = write_column(book, ws, rows, dates, values, vals, datetime.now(sp.MSK))
+    date, ndates = write_column(book, ws, lay, values, vals, datetime.now(sp.MSK))
     print(f"Готово: лист «{SHEET_DST}», колонка за {date} записана "
           f"(строк {len(values) - 1}, дат в истории {ndates}).")
 
