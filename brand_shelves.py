@@ -32,7 +32,10 @@ A–G, дописывает колонку за сегодня и больше �
 Группа = подряд идущие строки с одинаковым «Товар». Наша карточка группы —
 ПЕРВАЯ строка группы с нашим брендом в колонке C (в образце она выделена тёмно-
 зелёным). Остальные строки группы, включая наши же другие карточки, считаются
-полками: в них ищется карточка группы.
+полками: в них ищется карточка группы. Если у этой первой строки артикул не
+заполнен («нет», прочерк, пусто — товар ещё не заведён на WB), группа не мерится
+вообще и колонку за день не получает: роль контрольной НЕ переходит к следующей
+нашей карточке, иначе группа наберёт позиции другого товара (v1.2).
 
 Что в ячейке даты:
     строка полки        — позиция нашей карточки (число),
@@ -266,8 +269,8 @@ def read_layout(head: list[str]) -> dict:
             "brand": col_of(FIX_COLS[2], 2)}
 
 
-def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]]]:
-    """Лист → (строки, раскладка, сырые значения).
+def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]], set]:
+    """Лист → (строки, раскладка, сырые значения, группы без карточки бренда).
 
     Строка: {"row", "kind": "our"|"shelf"|"skip", "art", "block"}.
 
@@ -288,7 +291,8 @@ def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]
 
     rows: list[dict] = []
     block = None
-    block_has_our = set()
+    block_has_our: set[str] = set()
+    no_card: set[str] = set()
     for i, raw in enumerate(values[1:], start=2):
         cells = [str(x).strip() for x in (list(raw) + [""] * width)[:width]]
         product, art, brand = cells[ic], cells[ia], cells[ib]
@@ -304,18 +308,29 @@ def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]
             rows.append({"row": i, "kind": "skip", "art": "", "block": None})
             continue
         is_our = norm_brand(brand) in ours
-        # Наша карточка группы — первая наша строка блока. Остальные наши карточки
-        # (в образце светло-зелёные) считаются полками: в них тоже интересно стоять.
+        # Наша карточка группы — ПЕРВАЯ наша строка блока, и роль контрольной у неё
+        # уже не отнять. Остальные наши карточки (в образце светло-зелёные)
+        # считаются полками: в них тоже интересно стоять.
         kind = "shelf"
-        if not art.isdigit():
-            # Артикул не заполнен (в образце так у наливной L-Carnitine) — строка
-            # не полка и не наша карточка; блок ещё может получить нашу ниже.
-            kind = "skip"
-        elif is_our and block not in block_has_our:
-            kind = "our"
+        if is_our and block not in block_has_our:
             block_has_our.add(block)
+            if art.isdigit():
+                kind = "our"
+            else:
+                # v1.2. Карточки товара ещё нет: в артикуле «нет», прочерк или
+                # пусто. Раньше контрольной молча становилась СЛЕДУЮЩАЯ наша
+                # карточка блока — и группа получала чужие позиции, неотличимые
+                # от настоящих (05.08: `Choline + Inositol + Ginkgo` мерился по
+                # холину, `AAKG 180` — по 90-капсульному). Группа помечается как
+                # неизмеримая и колонку за день не получает вовсе.
+                kind = "skip"
+                no_card.add(block)
+        elif not art.isdigit():
+            # Артикул не заполнен (в образце так у наливной L-Carnitine) — строка
+            # не полка и не наша карточка.
+            kind = "skip"
         rows.append({"row": i, "kind": kind, "art": art, "block": block})
-    return rows, lay, values
+    return rows, lay, values, no_card
 
 
 def misplaced_controls(rows: list[dict]) -> list[str]:
@@ -335,12 +350,18 @@ def misplaced_controls(rows: list[dict]) -> list[str]:
             for r in rows if r["kind"] == "our" and r["row"] != first[r["block"]]]
 
 
-def build_groups(rows: list[dict]) -> list[dict]:
-    """Строки листа → группы для sp.run_groups."""
+def build_groups(rows: list[dict], no_card: set | None = None) -> list[dict]:
+    """Строки листа → группы для sp.run_groups.
+
+    Группа, у которой карточка бренда заведена без артикула (`no_card`), не
+    считается вообще: мерить нечем, а любое число в её строках было бы позицией
+    другого товара.
+    """
+    no_card = no_card or set()
     order: list[str] = []
     acc: dict[str, dict] = {}
     for r in rows:
-        if r["kind"] == "skip" or not r["block"]:
+        if r["kind"] == "skip" or not r["block"] or r["block"] in no_card:
             continue
         g = acc.get(r["block"])
         if g is None:
@@ -360,6 +381,20 @@ def build_groups(rows: list[dict]) -> list[dict]:
         sp.log("Группы без нашей карточки или без полок пропущены: "
                + ", ".join(f"{g['product']} (наших {len(g['ours'])}, "
                            f"полок {len(g['competitors'])})" for g in skipped))
+    if no_card:
+        sp.log("Группы без артикула у карточки бренда пропущены (мерить нечем, "
+               "колонка за день останется пустой): " + ", ".join(sorted(no_card)))
+
+    # v1.2. Одна и та же карточка контрольной в двух группах — почти всегда
+    # означает, что у одной из них своей карточки нет, а мы этого не заметили.
+    seen: dict[int, str] = {}
+    for g in good:
+        nm = g["ours"][0]
+        if nm in seen:
+            sp.log(f"ВНИМАНИЕ: контрольная карточка {nm} сразу в двух группах — "
+                   f"«{seen[nm]}» и «{g['product']}»; позиции у них совпадут")
+        else:
+            seen[nm] = g["product"]
     return good
 
 
@@ -523,8 +558,8 @@ def run_brand(client, brand: str, args) -> str:
             return f"{brand}: листа нет, dry-run — не завожу"
         ws = bootstrap(client, book, brand, args.template_id, args.template_tab)
 
-    rows, lay, values = read_sheet(ws, cfg["aliases"])
-    groups = build_groups(rows)
+    rows, lay, values, no_card = read_sheet(ws, cfg["aliases"])
+    groups = build_groups(rows, no_card)
     shelves = {c for g in groups for c in g["competitors"]}
     sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
            f"уникальных полок к обходу {len(shelves)}, "
@@ -550,12 +585,12 @@ def run_brand(client, brand: str, args) -> str:
         # перед записью: иначе значения лягут на старую нумерацию и разъедутся
         # (так вышло 04.08 в книге 4ME). Полки, появившиеся после обхода,
         # остаются пустыми — их сегодня не проверяли.
-        fresh_rows, fresh_lay, fresh_values = read_sheet(ws, cfg["aliases"])
+        fresh_rows, fresh_lay, fresh_values, fresh_no_card = read_sheet(ws, cfg["aliases"])
         if len(fresh_values) != len(values) or [r["art"] for r in fresh_rows] != [
                 r["art"] for r in rows]:
             sp.log("Строки листа изменились за время обхода — пишу по свежей раскладке")
-        rows, lay, values = fresh_rows, fresh_lay, fresh_values
-        groups = build_groups(rows)
+        rows, lay, values, no_card = fresh_rows, fresh_lay, fresh_values, fresh_no_card
+        groups = build_groups(rows, no_card)
 
     vals = cell_values(snapshot, groups, rows)
     nums = [v for v in vals.values() if isinstance(v, int)]
