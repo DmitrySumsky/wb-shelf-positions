@@ -44,9 +44,17 @@ A–G, дописывает колонку за сегодня и больше �
                           «ошибка сбора» = полка не отдалась (это НЕ «нас там нет»);
     строка нашей карточки — «N из M»: в скольких полках группы нашлись.
 
+Новый товар (v1.3, 06.08.2026) заводится в ОДНОЙ книге-доноре (по умолчанию
+NATURI, её ведёт Артур), а в остальные группа переезжает сама с `--sync-groups`:
+полки те же, контрольной встаёт карточка этого бренда — её артикул в книге-доноре
+уже стоит строкой-конкурентом. Карточки у бренда нет — приезжает «нет», и группа
+честно остаётся неизмеримой. Существующие строки книг при этом не трогаются:
+новые группы дописываются в конец листа.
+
 Запуск: шагом в shelves.yml (08:00 МСК), кнопкой в самой книге (workflow
 brand-shelves.yml) либо руками:
     python brand_shelves.py --brand all --creds ключ.json
+    python brand_shelves.py --brand all --sync-groups --creds ключ.json
 """
 
 from __future__ import annotations
@@ -92,6 +100,16 @@ FIX_COLS = ["Товар", "Артикул конкурента", "Бренд к�
             "Тип конкурента", "Прогрев", "Прогрев к-во"]
 NFIX = len(FIX_COLS)              # A..G
 KEEP_DATES = 90
+
+# v1.3. Что переносится при добавлении товара из книги-донора: только описание
+# полки. «Ключ», «Прогрев», «Артикул для прогрева» у каждого бренда свои — их
+# ведёт менеджер книги, и чужие значения там были бы враньём.
+SYNC_FIELDS = ["Товар", "Артикул конкурента", "Бренд конкурента",
+               "~ Выручка конкурента", "Тип конкурента"]
+SYNC_FROM = "NATURI"              # книга-донор по умолчанию: её ведёт Артур
+# Товары, которые в другой книге называются иначе и потому не переносятся:
+# у 4ME хром 270 мг, у донора — 250 мг, товар один и тот же.
+SYNC_SKIP = ["Chromium Picolinate 250 mg 120 caps"]
 
 NOT_IN_SHELF = "—"
 STATE_GONE = "нет карточки"
@@ -333,6 +351,156 @@ def read_sheet(ws, aliases: list[str]) -> tuple[list[dict], dict, list[list[str]
     return rows, lay, values, no_card
 
 
+# ------------------------------------------------- новые товары: перенос из книги-донора
+
+def blocks_of(head: list[str], values: list[list[str]],
+              lay: dict) -> tuple[list[str], dict[str, list[dict]]]:
+    """Лист → группы: порядок товаров и строки каждой группы как {заголовок: значение}.
+
+    Берётся только фиксированная часть листа: колонки-даты у книг свои, чужую
+    историю переносить нельзя. Заголовки — ключи в нижнем регистре, поэтому
+    книги с разным порядком колонок (в 4ME «Бренд» стоит перед «Артикулом»)
+    сходятся между собой без карт соответствия.
+    """
+    nfix = lay["nfix"]
+    ic = lay["product"]
+    titles = [str(head[i]).strip().lower() if i < len(head) else "" for i in range(nfix)]
+
+    order: list[str] = []
+    blocks: dict[str, list[dict]] = {}
+    block = None
+    for raw in values[1:]:
+        cells = [str(x).strip() for x in (list(raw) + [""] * nfix)[:nfix]]
+        if not any(cells):
+            block = None
+            continue
+        if cells[ic]:
+            block = cells[ic]
+        elif block is None:
+            continue
+        row = {titles[i]: cells[i] for i in range(nfix) if titles[i]}
+        row[titles[ic]] = block           # товар дублируем в каждой строке группы
+        if block not in blocks:
+            blocks[block] = []
+            order.append(block)
+        blocks[block].append(row)
+    return order, blocks
+
+
+def rows_for_brand(rows: list[dict], product: str, brand: str,
+                   used: set[str] | None = None) -> list[dict]:
+    """Строки группы из книги-донора → порядок для книги бренда.
+
+    Тот же приём, что при заведении листа: карточки бренда поднимаются в начало
+    группы, контрольной становится та, у которой «Тип конкурента» совпадает с
+    типом группы. Карточка бренда-донора при этом становится обычной полкой.
+
+    Два случая, когда контрольной карточки честно нет (v1.3):
+    строк бренда в группе нет вовсе (товара у него не бывает) — и артикул уже
+    работает контрольным в другой группе этой книги (так у `Choline` и
+    `Choline + Inositol + Ginkgo`: во второй группе стоит карточка первой).
+    Тогда в начало группы встаёт строка с «нет» в артикуле: группа видна в
+    листе, но не мерится — правило v1.2 «чужой карточкой не мерим».
+    """
+    kt, ka, kb, kk = (SYNC_FIELDS[0].lower(), SYNC_FIELDS[1].lower(),
+                      SYNC_FIELDS[2].lower(), SYNC_FIELDS[4].lower())
+    used = used or set()
+    ours = {norm_brand(a) for a in BRANDS[brand]["aliases"]}
+    kind = rows[0].get(kk, "") if rows else ""
+    mine = [r for r in rows if norm_brand(r.get(kb, "")) in ours]
+    rest = [r for r in rows if norm_brand(r.get(kb, "")) not in ours]
+
+    same = [r for r in mine if r.get(kk, "") == kind]
+    order = same + [r for r in mine if r not in same]
+    control = next((r for r in order
+                    if r.get(ka, "").isdigit() and r.get(ka, "") not in used), None)
+    if control is None:
+        control = next((r for r in order if not r.get(ka, "").isdigit()), None)
+    if control is None:
+        control = {kt: product, ka: "нет", kb: BRANDS[brand]["aliases"][0], kk: kind}
+        mine = [control] + mine
+    else:
+        mine = [control] + [r for r in mine if r is not control]
+    return mine + rest
+
+
+def sync_groups(book, ws, brand: str, head: list[str], values: list[list[str]], lay: dict,
+                ref_head: list[str], ref_values: list[list[str]], ref_lay: dict,
+                dry_run: bool = False, skip: set[str] | None = None) -> list[str]:
+    """Дописать в лист товары, которые есть в книге-доноре, а здесь ещё нет.
+
+    Список конкурентов у брендов общий, поэтому новый товар достаточно завести
+    в одной книге — в остальные группа переносится целиком: полки в том же
+    порядке, контрольной встаёт карточка этого бренда (её артикул в книге-доноре
+    уже есть строкой-конкурентом). Карточки у бренда нет — строка приезжает с
+    «нет» в артикуле, группа честно остаётся неизмеримой до появления товара.
+
+    Существующие строки не трогаются вообще: новые группы дописываются в конец
+    листа через пустую строку-разделитель.
+    """
+    ref_order, ref_blocks = blocks_of(ref_head, ref_values, ref_lay)
+    _, cur_blocks = blocks_of(head, values, lay)
+    # `skip` — тот же товар, названный в книге иначе: у 4ME хром 270 мг, а в
+    # книге-доноре 250 мг. Совпадение имён проверять нечем, поэтому список ведёт
+    # человек, иначе в лист приедет вторая группа того же товара.
+    skip = {norm_brand(s) for s in (skip or set())}
+    missing = [p for p in ref_order
+               if p not in cur_blocks and norm_brand(p) not in skip]
+    if not missing:
+        return []
+
+    nfix = lay["nfix"]
+    titles = [str(head[i]).strip().lower() if i < len(head) else "" for i in range(nfix)]
+    keep = {f.lower() for f in SYNC_FIELDS}
+    ours = {norm_brand(a) for a in BRANDS[brand]["aliases"]}
+    ka, kb = SYNC_FIELDS[1].lower(), SYNC_FIELDS[2].lower()
+
+    # Артикулы, которые уже работают контрольными в этой книге: второй раз тот же
+    # артикул контрольным не ставим — обе группы получили бы одни и те же позиции.
+    used = set()
+    for rows in cur_blocks.values():
+        own = next((r for r in rows if norm_brand(r.get(kb, "")) in ours), None)
+        if own and own.get(ka, "").isdigit():
+            used.add(own[ka])
+
+    out: list[list[str]] = []
+    paint: list[tuple[int, dict]] = []      # (индекс в out, цвет)
+    added: list[str] = []
+    for product in missing:
+        rows = rows_for_brand(ref_blocks[product], product, brand, used)
+        control_art = rows[0].get(ka, "") if rows else ""
+        if control_art.isdigit():
+            used.add(control_art)
+        out.append([""] * nfix)             # разделитель: группы не слипаются
+        first_our = True
+        for r in rows:
+            if norm_brand(r.get(kb, "")) in ours:
+                paint.append((len(out), COLOR_CONTROL if first_our else COLOR_OURS))
+                first_our = False
+            out.append([r.get(t, "") if t in keep else "" for t in titles])
+        added.append(f"{product} ({len(rows)} строк"
+                     + ("" if control_art.isdigit() else ", карточки бренда нет") + ")")
+
+    if dry_run:
+        return [f"dry-run, не дописано: {a}" for a in added]
+
+    start = len(values) + 1                 # первая свободная строка листа
+    end = start + len(out) - 1
+    if ws.row_count < end:
+        ws.add_rows(end - ws.row_count + 50)
+    ws.update(values=out, range_name=f"A{start}:{col_letter(nfix)}{end}",
+              value_input_option="USER_ENTERED")
+
+    reqs = [{"repeatCell": {
+        "range": {"sheetId": ws.id, "startRowIndex": start + i - 1, "endRowIndex": start + i,
+                  "startColumnIndex": 0, "endColumnIndex": nfix},
+        "cell": {"userEnteredFormat": {"backgroundColor": color}},
+        "fields": "userEnteredFormat.backgroundColor"}} for i, color in paint]
+    for i in range(0, len(reqs), 300):
+        book.batch_update({"requests": reqs[i:i + 300]})
+    return added
+
+
 def misplaced_controls(rows: list[dict]) -> list[str]:
     """Группы, где контрольная карточка стоит не первой строкой.
 
@@ -545,8 +713,12 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
 
 # ------------------------------------------------------------------------- main
 
-def run_brand(client, brand: str, args) -> str:
-    """Один бренд: завести лист при необходимости, обойти полки, дописать колонку."""
+def run_brand(client, brand: str, args, ref: tuple | None = None) -> str:
+    """Один бренд: завести лист при необходимости, обойти полки, дописать колонку.
+
+    `ref` — (шапка, значения, раскладка) листа книги-донора: заданы, значит перед
+    обходом в лист доедут товары, которых в нём ещё нет (v1.3).
+    """
     cfg = BRANDS[brand]
     sp.log(f"=== {brand} ===")
     book = client.open_by_key(os.environ.get(f"SHEET_ID_{brand.upper().replace(' ', '_')}")
@@ -559,6 +731,15 @@ def run_brand(client, brand: str, args) -> str:
         ws = bootstrap(client, book, brand, args.template_id, args.template_tab)
 
     rows, lay, values, no_card = read_sheet(ws, cfg["aliases"])
+    if ref is not None:
+        added = sync_groups(book, ws, brand, [str(x).strip() for x in values[0]],
+                            values, lay, *ref, dry_run=args.dry_run,
+                            skip=set(filter(None, args.sync_skip.split(";"))))
+        if added:
+            sp.log(f"Новых товаров из книги-донора: {len(added)} — " + "; ".join(added))
+            if not args.dry_run:
+                rows, lay, values, no_card = read_sheet(ws, cfg["aliases"])
+
     groups = build_groups(rows, no_card)
     shelves = {c for g in groups for c in g["competitors"]}
     sp.log(f"Лист «{SHEET_DST}»: строк {len(values) - 1}, групп {len(groups)}, "
@@ -623,6 +804,11 @@ def main() -> None:
     ap.add_argument("--snapshot-in", default=None,
                     help="взять готовый снапшот вместо обхода полок (отладка)")
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
+    ap.add_argument("--sync-groups", action="store_true",
+                    help="дописать в книги товары, которые есть в книге-доноре")
+    ap.add_argument("--sync-from", default=SYNC_FROM, help="книга-донор новых товаров")
+    ap.add_argument("--sync-skip", default=";".join(SYNC_SKIP),
+                    help="товары, которые не переносить (через «;»)")
     args = ap.parse_args()
 
     if args.brand.lower() == "all":
@@ -636,10 +822,24 @@ def main() -> None:
     install_retries()
     client = ts.get_client(args.creds)
 
+    # Книга-донор читается один раз на прогон: список конкурентов у брендов общий,
+    # и новый товар достаточно завести в ней одной.
+    donor, ref = None, None
+    if args.sync_groups:
+        match = [b for b in BRANDS if b.lower() == args.sync_from.strip().lower()]
+        if not match:
+            raise SystemExit(f"Неизвестная книга-донор {args.sync_from!r}")
+        donor = match[0]
+        dvals = client.open_by_key(BRANDS[donor]["sheet_id"]).worksheet(SHEET_DST) \
+                      .get_all_values()
+        dhead = [str(x).strip() for x in dvals[0]]
+        ref = (dhead, dvals, read_layout(dhead))
+        sp.log(f"Новые товары беру из книги {donor}")
+
     results, failed = [], []
     for brand in brands:
         try:
-            results.append(run_brand(client, brand, args))
+            results.append(run_brand(client, brand, args, None if brand == donor else ref))
         except Exception as exc:
             # Один бренд не должен ронять остальные: книга может быть закрыта,
             # лист переименован, полки не отдаться — остальные три обновятся.
