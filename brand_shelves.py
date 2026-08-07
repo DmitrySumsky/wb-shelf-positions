@@ -42,7 +42,10 @@ A–G, дописывает колонку за сегодня и больше �
                           «—» = полку проверили, нас там нет,
                           «нет карточки» = артикул полки удалён/скрыт на WB,
                           «ошибка сбора» = полка не отдалась (это НЕ «нас там нет»);
-    строка нашей карточки — «N из M»: в скольких полках группы нашлись.
+    строка нашей карточки — «N из M»: в скольких полках группы нашлись;
+    вся группа целиком   — «нет такого товара»: у бренда нет карточки, мерить
+                          нечем (v1.4; раньше такие группы оставались пустыми и
+                          выглядели как обрыв прогона).
 
 Новый товар (v1.3, 06.08.2026) заводится в ОДНОЙ книге-доноре (по умолчанию
 NATURI, её ведёт Артур), а в остальные группа переезжает сама с `--sync-groups`:
@@ -114,10 +117,14 @@ SYNC_SKIP = ["Chromium Picolinate 250 mg 120 caps"]
 NOT_IN_SHELF = "—"
 STATE_GONE = "нет карточки"
 STATE_FAIL = "ошибка сбора"
+# v1.4. Группа, которую мерить нечем (у бренда нет карточки товара). Раньше её
+# строки оставались пустыми, и по листу это читалось как «скрипт сломался на
+# середине». Пишем прямым текстом — видно, что прошли весь лист.
+STATE_NO_PRODUCT = "нет такого товара"
 
 # Раскраска позиций — условным форматированием (шесть правил на любой размер листа),
 # как в листе «Полки» книги VEXOR: ячеек тут десятки тысяч, красить их поштучно дорого.
-BANDS = [
+BANDS = [  # шесть правил на позиции + седьмое на текстовые пометки
     (10, {"red": 0.72, "green": 0.88, "blue": 0.72}),
     (30, {"red": 0.85, "green": 0.94, "blue": 0.78}),
     (100, {"red": 1.00, "green": 0.95, "blue": 0.75}),
@@ -551,7 +558,8 @@ def build_groups(rows: list[dict], no_card: set | None = None) -> list[dict]:
                            f"полок {len(g['competitors'])})" for g in skipped))
     if no_card:
         sp.log("Группы без артикула у карточки бренда пропущены (мерить нечем, "
-               "колонка за день останется пустой): " + ", ".join(sorted(no_card)))
+               "в колонке за день будет «нет такого товара»): "
+               + ", ".join(sorted(no_card)))
 
     # v1.2. Одна и та же карточка контрольной в двух группах — почти всегда
     # означает, что у одной из них своей карточки нет, а мы этого не заметили.
@@ -576,8 +584,16 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
     visited = set(snapshot.get("shelves", {}))     # какие полки вообще обходили
     our_of = {g["product"]: str(g["ours"][0]) for g in groups}
 
+    # v1.4. Группы без контрольной карточки: у бренда нет такого товара («нет»
+    # или пусто в артикуле нашей строки) либо строк бренда в группе нет вовсе.
+    # Помечаем ВСЕ строки такой группы, включая пустые-по-артикулу.
+    with_our = {r["block"] for r in rows if r["kind"] == "our"}
+
     out: dict[int, object] = {}
     for r in rows:
+        if r["block"] and r["block"] not in with_our:
+            out[r["row"]] = STATE_NO_PRODUCT
+            continue
         if r["kind"] == "skip":
             continue
         our = our_of.get(r["block"])
@@ -675,7 +691,7 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
             "properties": {"pixelSize": 60}, "fields": "pixelSize"}},
     ]
 
-    # Условное форматирование пересоздаём целиком: правил всегда шесть, и они
+    # Условное форматирование пересоздаём целиком: правил всегда семь, и они
     # не размножаются от прогона к прогону.
     meta = book.fetch_sheet_metadata(
         {"fields": "sheets(properties.sheetId,conditionalFormats)"})
@@ -700,11 +716,12 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
         "booleanRule": {"condition": {"type": "NUMBER_GREATER", "values": [
             {"userEnteredValue": str(BANDS[-1][0])}]},
             "format": {"backgroundColor": COLOR_DEEP}}}}})
-    reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
-        "ranges": [rng],
-        "booleanRule": {"condition": {"type": "TEXT_EQ", "values": [
-            {"userEnteredValue": NOT_IN_SHELF}]},
-            "format": {"backgroundColor": COLOR_NONE}}}}})
+    for text in (NOT_IN_SHELF, STATE_NO_PRODUCT):
+        reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [rng],
+            "booleanRule": {"condition": {"type": "TEXT_EQ", "values": [
+                {"userEnteredValue": text}]},
+                "format": {"backgroundColor": COLOR_NONE}}}}})
 
     for i in range(0, len(reqs), 300):
         book.batch_update({"requests": reqs[i:i + 300]})
@@ -778,7 +795,9 @@ def run_brand(client, brand: str, args, ref: tuple | None = None) -> str:
     stat = (f"позиций {len(nums)}, нас нет в полке "
             f"{sum(1 for v in vals.values() if v == NOT_IN_SHELF)}, "
             f"нет карточки {sum(1 for v in vals.values() if v == STATE_GONE)}, "
-            f"ошибок сбора {sum(1 for v in vals.values() if v == STATE_FAIL)}"
+            f"ошибок сбора {sum(1 for v in vals.values() if v == STATE_FAIL)}, "
+            f"строк без товара у бренда "
+            f"{sum(1 for v in vals.values() if v == STATE_NO_PRODUCT)}"
             + (f", медиана {sorted(nums)[len(nums) // 2]}" if nums else ""))
     sp.log(stat)
 
