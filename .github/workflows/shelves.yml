@@ -69,6 +69,15 @@ jobs:
         run: |
           python brand_shelves.py --brand all
 
+      # Цены в книгах брендов: строки листа «Цены» ведёт человек, скрипт только
+      # дописывает колонку за сегодня. Пока включена одна книга — Health Form.
+      - name: Цены в книгах брендов
+        if: always()
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+        run: |
+          python brand_prices.py --brand all
+
       - name: Сохранить снапшот как артефакт прогона
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,6 +90,7 @@ jobs:
             snapshot_naturi.json
             snapshot_sunshine.json
             snapshot_health_form.json
+            snapshot_prices_health_form.json
             snapshot_4me.json
           if-no-files-found: ignore
           retention-days: 30
