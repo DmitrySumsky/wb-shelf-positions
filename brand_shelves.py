@@ -72,25 +72,19 @@ import gspread
 
 import shelf_positions as sp
 import to_sheets as ts
+import wb_config
 from vexor_shelves import install_retries
 
 # Книги брендов (папка «Анализ конкурентов» на Drive). ID не секрет.
+# v2.0 (10.08.2026): список брендов и ID книг переехали в `brands.json` —
+# единственное место, где они заведены (пятый бренд правится там, а не в коде).
 # `aliases` — как бренд написан в колонке «Бренд конкурента» образца; сравнение
 # точное по нормализованной строке, иначе «Health Form» поймал бы «HealthIs».
-BRANDS: dict[str, dict] = {
-    "NATURI": {"sheet_id": "1XLby8VEOKQtuXrm4OCiQ-PFiTMXfaUe7gF054feoh_0",
-               "aliases": ["NATURI"]},
-    "SUNSHINE": {"sheet_id": "1xustRP7HtPHNiZTRnGZ1FU7T_nPLnyeP9PD4VxUvw1o",
-                 "aliases": ["Sunshine Nutrition", "SUNSHINE", "Sunshine"]},
-    "Health Form": {"sheet_id": "1KxORIJezgLt85dLl6D_wHnsRYfNMwn1as9S_L32Swvc",
-                    "aliases": ["Health Form", "HealthForm"]},
-    "4ME": {"sheet_id": "1slwJjO4mEn7umu6vH0bMbzuWGuAkfeVdekzTUExj-Ro",
-            "aliases": ["4Me Nutrition", "4ME", "4Me"]},
-}
+BRANDS: dict[str, dict] = wb_config.BRANDS
 
 # Откуда взять раскладку при самом первом запуске (книга «Анализ конкурентов ВБ авто»).
-TEMPLATE_SHEET_ID = "1hqCt4QnCnqrLrRUZD3hSCuDd3k-2PFpaZdHNaxE4Nzk"
-TEMPLATE_TAB = "Натури пример"
+TEMPLATE_SHEET_ID = wb_config.TEMPLATE_SHEET_ID
+TEMPLATE_TAB = wb_config.TEMPLATE_TAB
 
 SHEET_DST = "Полки"
 
@@ -102,17 +96,17 @@ COL_WIDTHS = [330, 115, 150, 140, 110, 80, 100]              # A..G
 FIX_COLS = ["Товар", "Артикул конкурента", "Бренд конкурента", "~ Выручка конкурента",
             "Тип конкурента", "Прогрев", "Прогрев к-во"]
 NFIX = len(FIX_COLS)              # A..G
-KEEP_DATES = 90
+KEEP_DATES = wb_config.KEEP_DATES
 
 # v1.3. Что переносится при добавлении товара из книги-донора: только описание
 # полки. «Ключ», «Прогрев», «Артикул для прогрева» у каждого бренда свои — их
 # ведёт менеджер книги, и чужие значения там были бы враньём.
 SYNC_FIELDS = ["Товар", "Артикул конкурента", "Бренд конкурента",
                "~ Выручка конкурента", "Тип конкурента"]
-SYNC_FROM = "NATURI"              # книга-донор по умолчанию: её ведёт Артур
+SYNC_FROM = wb_config.SYNC_FROM   # книга-донор по умолчанию: её ведёт Артур
 # Товары, которые в другой книге называются иначе и потому не переносятся:
-# у 4ME хром 270 мг, у донора — 250 мг, товар один и тот же.
-SYNC_SKIP = ["Chromium Picolinate 250 mg 120 caps"]
+# у 4ME хром 270 мг, у донора — 250 мг, товар один и тот же. Список — в brands.json.
+SYNC_SKIP = wb_config.SYNC_SKIP
 
 NOT_IN_SHELF = "—"
 STATE_GONE = "нет карточки"

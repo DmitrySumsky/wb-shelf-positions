@@ -5,6 +5,14 @@ name: Позиции в полках конкурентов (WB)
 # расписание GitHub отключено намеренно — 28.07.2026 оно опоздало на 2,5 часа
 # (просили 07:10 МСК, стартовало в 09:36), а полки надо снимать в одно и то же
 # время суток, иначе позиции несравнимы между днями.
+#
+# 10.08.2026 — РАЗБИТ НА ПАРАЛЛЕЛЬНЫЕ ЗАДАНИЯ. До этого все шаги шли одним
+# заданием с потолком 30 минут: 06.08 Артур завёл 19 новых товаров, обход
+# вырос вдвое, и задание стало убиваться по таймауту на ПОСЛЕДНЕМ бренде
+# (4ME) — его книга не обновлялась с 07.08, а шаг цен не запускался вовсе.
+# Снаружи это выглядело как «таблица сломалась». Теперь бренд = своё задание:
+# они идут одновременно, у каждого свой потолок, падение одного не трогает
+# остальные. Итог дня и отставшие книги — заданием digest в конце.
 on:
   workflow_dispatch:
     inputs:
@@ -17,16 +25,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  collect:
+  # Общая книга «Анализ конкурентов ВБ авто»: матрица, сводка, история, цены.
+  common:
+    name: Общая книга
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Поставить зависимости
         run: pip install -r requirements.txt
 
@@ -35,8 +43,7 @@ jobs:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           SOURCE_ID: ${{ secrets.SOURCE_ID }}
-        run: |
-          python to_sheets.py
+        run: python to_sheets.py
 
       # Цены независимы от позиций: пишем их, даже если сбор полок упал.
       - name: Снять цены и записать в таблицу
@@ -45,52 +52,115 @@ jobs:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           SOURCE_ID: ${{ secrets.SOURCE_ID }}
-        run: |
-          python prices_to_sheets.py
+        run: python prices_to_sheets.py
 
-      # Книга VEXOR (автохимия) — свой источник строк и свой лист «Полки».
-      # Независима от двух шагов выше: падение одного не должно ронять остальные.
-      - name: Полки в книге VEXOR
+      - uses: actions/upload-artifact@v4
         if: always()
-        env:
-          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-          VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
-        run: |
-          python vexor_shelves.py
-
-      # Отдельные книги брендов (NATURI, SUNSHINE, Health Form, 4ME): список
-      # строк ведёт Артур в самом листе «Полки», скрипт только дописывает
-      # колонку за сегодня. Один упавший бренд не роняет остальные.
-      - name: Полки в книгах брендов
-        if: always()
-        env:
-          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-        run: |
-          python brand_shelves.py --brand all
-
-      # Цены в книгах брендов: строки листа «Цены» ведёт человек, скрипт только
-      # дописывает колонку за сегодня. Пока включена одна книга — Health Form.
-      - name: Цены в книгах брендов
-        if: always()
-        env:
-          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-        run: |
-          python brand_prices.py --brand all
-
-      - name: Сохранить снапшот как артефакт прогона
-        if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: snapshot-${{ github.run_number }}
+          name: snapshot-common-${{ github.run_number }}
           path: |
             snapshot.json
             snapshot_prices.json
-            snapshot_vexor.json
-            snapshot_naturi.json
-            snapshot_sunshine.json
-            snapshot_health_form.json
-            snapshot_prices_health_form.json
-            snapshot_4me.json
           if-no-files-found: ignore
           retention-days: 30
+
+  # Книга VEXOR (автохимия) — свой источник строк и свой лист «Полки».
+  vexor:
+    name: Книга VEXOR
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+      - name: Полки в книге VEXOR
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
+        run: python vexor_shelves.py
+
+  # Книги брендов: один бренд = одно задание, все четыре идут параллельно.
+  # fail-fast: false — упавший бренд не отменяет остальные.
+  brands:
+    name: Полки ${{ matrix.brand }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        brand: [NATURI, SUNSHINE, "Health Form", 4ME]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Полки в книге бренда
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python brand_shelves.py --brand "${{ matrix.brand }}"
+
+      # Падение конкретной книги должно быть видно сразу, а не через сутки.
+      - name: Сообщить о падении в Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python notify.py --fail-title "Полки ${{ matrix.brand }}: прогон упал" \
+            "Журнал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshot-${{ matrix.brand }}-${{ github.run_number }}
+          path: snapshot_*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Цены брендов: четыре книги цен, один обход WB на все (списки карточек
+  # пересекаются на 93 %). Не зависит от полок — идёт параллельно им.
+  prices:
+    name: Цены брендов
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+      - name: Цены в книгах брендов
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python brand_prices.py --brand all --notify-fail
+
+  # Итог дня: читает сами таблицы (а не журнал прогона) и шлёт сводку в Telegram.
+  digest:
+    name: Сводка в Telegram
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [common, vexor, brands, prices]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+      - name: Сводка по книгам брендов
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python digest.py --send

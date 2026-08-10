@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Цены по карточкам листа «Цены» книги бренда.
+Цены по карточкам листа «Цены» ОТДЕЛЬНОЙ книги цен бренда.
+
+v2.0.0 — 10.08.2026
+  ЦЕНЫ ПЕРЕЕХАЛИ ИЗ КНИГИ ПОЛОК В СВОЮ КНИГУ (просьба пользователя 10.08):
+  • книга берётся из `brands.json` (поле `prices_book`), а не из книги полок;
+  • сбор включён у всех четырёх брендов, а не у одной Health Form;
+  • артикулы всех книг снимаются ОДНИМ обходом WB (пересечение списков 93 %),
+    дальше та же карта цен раскладывается по книгам — 4 книги стоят столько же
+    сетевых запросов, сколько раньше одна;
+  • падение одной книги не роняет остальные, в конце — сводка и код возврата.
+
+v1.9.0 — 10.08.2026 · градиент держится на всей истории листа
+v1.7.0 — 10.08.2026 · градиент цен внутри блока товара, свой на каждую дату
+v1.5.0 — 07.08.2026 · первая версия: цены по карточкам листа «Цены»
 
 Задача от 07.08.2026: в книге бренда (Health Form) уже лежит лист «Цены» —
 копия строк «Полок» (наши карточки и конкуренты, группа за группой), но без
@@ -37,8 +50,8 @@
 текстовые состояния — серым. Сравнение всегда со ВЧЕРАШНЕЙ колонкой, поэтому
 повторный прогон в тот же день не красит цену «сама с собой».
 
-Запуск: шагом в shelves.yml после полок либо руками:
-    python brand_prices.py --brand "Health Form" --creds ключ.json
+Запуск: шагом в shelves.yml после полок, интрадей-прогоном prices.yml либо руками:
+    python brand_prices.py --brand all --creds ключ.json
 """
 
 from __future__ import annotations
@@ -51,13 +64,15 @@ from datetime import datetime
 import gspread
 
 import brand_shelves as bs
+import notify
 import prices_to_sheets as pts
 import shelf_positions as sp
 import to_sheets as ts
+import wb_config
 from vexor_shelves import install_retries
 
 SHEET_PRICES = "Цены"
-KEEP_DATES = 90
+KEEP_DATES = wb_config.KEEP_DATES
 
 # Градиент «дёшево зелёное → дорого красное» внутри блока товара, СВОЙ на каждую
 # дату (правило = блок × колонка): так цвет отвечает на вопрос «кто дешевле
@@ -69,13 +84,18 @@ KEEP_DATES = 90
 # получается блоки × даты — на боевом листе Health Form это 44 × 69 ≈ 3 000.
 # Sheets их тянет, но если книга начнёт открываться медленно, лечится снижением
 # этого числа: свежие даты покроются, глубина останется числами.
-GRADIENT_DATES = KEEP_DATES
+GRADIENT_DATES = wb_config.GRADIENT_DATES
 GRADIENT_MIN = {"red": 0.34117648, "green": 0.73333335, "blue": 0.5411765}
 GRADIENT_MAX = {"red": 0.9019608, "green": 0.4862745, "blue": 0.4509804}
 
-# Книги, где сбор цен включён. Лист «Цены» ведёт человек, поэтому книга
-# добавляется сюда осознанно, а не «раз есть лист — пишем».
-BRANDS_WITH_PRICES = ["Health Form"]
+
+def brands_with_prices() -> list[str]:
+    """Бренды, у которых в `brands.json` заведена книга цен.
+
+    Лист «Цены» ведёт человек, поэтому книга подключается осознанно — полем
+    `prices` в настройках, а не «раз есть лист — пишем».
+    """
+    return wb_config.books_with_prices()
 
 STATE_NO_PRODUCT = bs.STATE_NO_PRODUCT
 TEXT_STATES = (pts.STATE_NONE, pts.STATE_GONE, pts.STATE_FAIL, STATE_NO_PRODUCT)
@@ -190,8 +210,16 @@ def rebuild_gradients(book, ws, lay: dict, blocks: list[tuple[int, int]],
 
 
 def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
-                 prices: dict[int, int | str], when: datetime) -> tuple[str, int, int]:
-    """Колонка цен за сегодня. Вернёт (дата, подешевело, подорожало)."""
+                 prices: dict[int, int | str], when: datetime,
+                 gradient: bool = True) -> tuple[str, int, int]:
+    """Колонка цен за сегодня. Вернёт (дата, подешевело, подорожало).
+
+    `gradient=False` — не пересобирать условное форматирование: правила уже
+    покрывают сегодняшнюю колонку, а пересборка это ~3 000 правил и ~20 с на
+    книгу. Интрадей-прогоны (каждые 2 часа) переписывают колонку НА МЕСТЕ, им
+    пересобирать нечего; раз в сутки, когда колонка вставляется новая, градиент
+    строится заново.
+    """
     today = when.strftime("%d.%m")
     nfix = lay["nfix"]
     nrows = len(values)
@@ -292,101 +320,140 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
     for i in range(0, len(reqs), 300):
         book.batch_update({"requests": reqs[i:i + 300]})
 
-    blocks = read_blocks(values, lay)
-    nrules = rebuild_gradients(book, ws, lay, blocks, ndates)
-    sp.log(f"Градиент по блокам: блоков {len(blocks)}, дат под градиентом "
-           f"{min(ndates, GRADIENT_DATES)}, правил {nrules}")
+    if gradient:
+        blocks = read_blocks(values, lay)
+        nrules = rebuild_gradients(book, ws, lay, blocks, ndates)
+        sp.log(f"Градиент по блокам: блоков {len(blocks)}, дат под градиентом "
+               f"{min(ndates, GRADIENT_DATES)}, правил {nrules}")
     return today, down, up
 
 
-def run_brand(client, brand: str, args) -> str:
-    cfg = bs.BRANDS[brand]
-    sp.log(f"=== {brand}: цены ===")
-    book = client.open_by_key(os.environ.get(f"SHEET_ID_{brand.upper().replace(' ', '_')}")
-                              or cfg["sheet_id"])
+def open_prices_ws(client, brand: str):
+    """(книга цен, лист «Цены») бренда. Книга — из `brands.json`."""
+    book = client.open_by_key(wb_config.prices_book(brand))
     try:
-        ws = book.worksheet(SHEET_PRICES)
+        return book, book.worksheet(SHEET_PRICES)
     except gspread.WorksheetNotFound:
-        raise SystemExit(f"В книге {brand} нет листа «{SHEET_PRICES}» — "
-                         "строки листа ведёт человек, сам его не завожу")
+        raise SystemExit(
+            f"В книге цен бренда {brand} нет листа «{SHEET_PRICES}». "
+            "Строки листа ведёт человек, сам его не завожу — лист заводится "
+            "один раз скриптом prices_bootstrap.py")
 
-    rows, lay, values = read_price_rows(ws)
-    nm_ids = sorted({int(r["nm"]) for r in rows if r["nm"]})
-    sp.log(f"Лист «{SHEET_PRICES}»: строк {len(rows)}, из них без артикула "
-           f"{sum(1 for r in rows if not r['nm'])}; уникальных карточек "
-           f"{len(nm_ids)}; дат в истории {len(lay['date_at'])}")
 
-    prices = pts.fetch_prices(nm_ids, args.dest)
-    ok = sum(1 for v in prices.values() if isinstance(v, int))
-    stat = (f"цен {ok}, нет в наличии "
-            f"{sum(1 for v in prices.values() if v == pts.STATE_NONE)}, "
-            f"нет карточки {sum(1 for v in prices.values() if v == pts.STATE_GONE)}, "
-            f"ошибок сбора {sum(1 for v in prices.values() if v == pts.STATE_FAIL)}")
-    sp.log(stat)
+def stat_of(prices: dict[int, int | str], nm_ids: list[int]) -> str:
+    mine = [prices.get(nm, pts.STATE_FAIL) for nm in nm_ids]
+    return (f"цен {sum(1 for v in mine if isinstance(v, int))}, "
+            f"нет в наличии {sum(1 for v in mine if v == pts.STATE_NONE)}, "
+            f"нет карточки {sum(1 for v in mine if v == pts.STATE_GONE)}, "
+            f"ошибок сбора {sum(1 for v in mine if v == pts.STATE_FAIL)}")
 
-    if args.save_snapshots:
-        path = f"snapshot_prices_{brand.lower().replace(' ', '_')}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"snapshot_at": datetime.now(sp.MSK).isoformat(timespec="seconds"),
-                       "brand": brand, "dest": args.dest,
-                       "source": "card.wb.ru/cards/v4/detail (wb кошелёк, floor ×0.98)",
-                       "prices": {str(k): v for k, v in prices.items()}},
-                      f, ensure_ascii=False, indent=2)
-        sp.log(f"Снапшот сохранён: {path}")
 
-    if args.dry_run:
-        return f"{brand}: dry-run, {stat}"
+def run_all(client, brands: list[str], args) -> tuple[list[str], list[str]]:
+    """Один обход WB на все книги цен. Вернёт (итоги, бренды с ошибкой).
 
-    # Строки человек правит когда угодно, а колонка пишется по их номерам —
-    # перечитываем лист прямо перед записью (тот же приём, что в brand_shelves).
-    rows, lay, values = read_price_rows(ws)
-    date, down, up = write_column(book, ws, lay, values, rows, prices,
-                                  datetime.now(sp.MSK))
-    return (f"{brand}: колонка за {date} записана ({stat}; "
-            f"подешевело {down}, подорожало {up})")
+    Списки карточек у книг пересекаются на 93 % (список конкурентов общий, у
+    книг различается только своя карточка), а цена карточки от бренда книги не
+    зависит. Поэтому сначала читаем все листы, потом снимаем ОБЪЕДИНЕНИЕ
+    артикулов одним проходом, и уже готовую карту раскладываем по книгам.
+    """
+    plans: list[dict] = []
+    failed: list[str] = []
+    for brand in brands:
+        try:
+            book, ws = open_prices_ws(client, brand)
+            rows, lay, _ = read_price_rows(ws)
+            nm_ids = sorted({int(r["nm"]) for r in rows if r["nm"]})
+            sp.log(f"{brand}: лист «{SHEET_PRICES}» — строк {len(rows)}, без "
+                   f"артикула {sum(1 for r in rows if not r['nm'])}, карточек "
+                   f"{len(nm_ids)}, дат в истории {len(lay['date_at'])}")
+            plans.append({"brand": brand, "book": book, "ws": ws, "nm_ids": nm_ids})
+        except Exception as exc:                        # noqa: BLE001
+            sp.log(f"ОШИБКА чтения книги цен {brand}: {exc.__class__.__name__}: {exc}")
+            failed.append(brand)
+
+    if not plans:
+        return [], failed
+
+    union = sorted({nm for p in plans for nm in p["nm_ids"]})
+    sp.log(f"Снимаю цены: книг {len(plans)}, уникальных карточек {len(union)} "
+           f"(сумма по книгам {sum(len(p['nm_ids']) for p in plans)})")
+    prices = pts.fetch_prices(union, args.dest)
+    sp.log("Итог сбора: " + stat_of(prices, union))
+
+    results: list[str] = []
+    for plan in plans:
+        brand, ws, book = plan["brand"], plan["ws"], plan["book"]
+        stat = stat_of(prices, plan["nm_ids"])
+        if args.save_snapshots:
+            path = f"snapshot_prices_{brand.lower().replace(' ', '_')}.json"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"snapshot_at": datetime.now(sp.MSK).isoformat(timespec="seconds"),
+                           "brand": brand, "dest": args.dest,
+                           "source": "card.wb.ru/cards/v4/detail (wb кошелёк, floor ×0.98)",
+                           "prices": {str(nm): prices.get(nm) for nm in plan["nm_ids"]}},
+                          f, ensure_ascii=False, indent=2)
+        if args.dry_run:
+            results.append(f"{brand}: dry-run, {stat}")
+            continue
+        try:
+            # Строки человек правит когда угодно, а колонка пишется по их
+            # номерам — перечитываем лист прямо перед записью (тот же приём,
+            # что в brand_shelves).
+            rows, lay, values = read_price_rows(ws)
+            date, down, up = write_column(book, ws, lay, values, rows, prices,
+                                          datetime.now(sp.MSK),
+                                          gradient=not args.no_gradient)
+            results.append(f"{brand}: колонка за {date} записана ({stat}; "
+                           f"подешевело {down}, подорожало {up})")
+        except Exception as exc:                        # noqa: BLE001
+            sp.log(f"ОШИБКА записи книги цен {brand}: {exc.__class__.__name__}: {exc}")
+            failed.append(brand)
+    return results, failed
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Цены по карточкам листа «Цены» книги бренда")
+        description="Цены по карточкам листа «Цены» книги цен бренда")
     ap.add_argument("--brand", default="all",
                     help="имя бренда или all — все книги со сбором цен "
-                         f"({', '.join(BRANDS_WITH_PRICES)})")
+                         f"({', '.join(brands_with_prices())})")
     ap.add_argument("--creds", default=None)
-    ap.add_argument("--dest", type=int, default=sp.DEST_MOSCOW)
+    ap.add_argument("--dest", type=int, default=wb_config.DEST)
     ap.add_argument("--save-snapshots", action="store_true", default=True)
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
+    ap.add_argument("--notify-fail", action="store_true",
+                    help="упавшие книги — сообщением в Telegram")
+    ap.add_argument("--no-gradient", action="store_true",
+                    help="не пересобирать условное форматирование (интрадей)")
     args = ap.parse_args()
 
+    enabled = brands_with_prices()
     if args.brand.lower() == "all":
-        brands = list(BRANDS_WITH_PRICES)
+        brands = list(enabled)
     else:
-        match = [b for b in BRANDS_WITH_PRICES if b.lower() == args.brand.strip().lower()]
+        match = [b for b in enabled if b.lower() == args.brand.strip().lower()]
         if not match:
             known = [b for b in bs.BRANDS if b.lower() == args.brand.strip().lower()]
             if known:
-                # Кнопка «Обновить цены» стоит во всех книгах, а лист «Цены»
-                # ведётся не везде: это не ошибка прогона, просто нечего снимать.
+                # Кнопка «Обновить цены» стоит во всех книгах, а книга цен
+                # заведена не у всех: это не ошибка прогона, просто нечего снимать.
                 print(f"Готово: у бренда {known[0]} сбор цен не включён "
-                      f"(есть у: {', '.join(BRANDS_WITH_PRICES)}) — нечего снимать")
+                      f"(есть у: {', '.join(enabled)}) — нечего снимать")
                 return
-            raise SystemExit(f"Сбор цен включён только для: {BRANDS_WITH_PRICES}; "
+            raise SystemExit(f"Сбор цен включён только для: {enabled}; "
                              f"пришло {args.brand!r}")
         brands = match
 
     install_retries()
     client = ts.get_client(args.creds)
 
-    results, failed = [], []
-    for brand in brands:
-        try:
-            results.append(run_brand(client, brand, args))
-        except Exception as exc:
-            sp.log(f"ОШИБКА по бренду {brand}: {exc.__class__.__name__}: {exc}")
-            failed.append(brand)
+    results, failed = run_all(client, brands, args)
     for line in results:
         print("Готово:", line)
     if failed:
+        if args.notify_fail:
+            notify.fail("Цены брендов: книги с ошибкой — " + ", ".join(failed),
+                        "\n".join(results))
         raise SystemExit(f"Бренды с ошибкой: {', '.join(failed)}")
 
 

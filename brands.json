@@ -1,0 +1,53 @@
+{
+  "_комментарий": "Центральные настройки книг брендов: полки, цены, глубина истории, оповещения. Единственное место, где заведены ID таблиц — скрипты берут их отсюда (wb_config.py). Новый бренд = новый блок в brands, больше нигде править не надо.",
+  "version": "2.0.0",
+  "updated": "2026-08-10",
+
+  "dest": -1257786,
+  "keep_dates": 90,
+  "gradient_dates": 90,
+
+  "template": {
+    "sheet_id": "1hqCt4QnCnqrLrRUZD3hSCuDd3k-2PFpaZdHNaxE4Nzk",
+    "tab": "Натури пример"
+  },
+
+  "sync": {
+    "from": "NATURI",
+    "skip": ["Chromium Picolinate 250 mg 120 caps"]
+  },
+
+  "telegram": {
+    "enabled": true,
+    "_комментарий": "Токен и получатель — секреты репозитория TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID. Итог раз в сутки шлёт digest.py после ежедневного прогона; падение любого шага уходит сразу отдельным сообщением. Интрадей-прогоны цен молчат, пока всё хорошо.",
+    "daily_digest": true,
+    "quiet_intraday": true
+  },
+
+  "brands": {
+    "NATURI": {
+      "aliases": ["NATURI"],
+      "shelves_book": "1XLby8VEOKQtuXrm4OCiQ-PFiTMXfaUe7gF054feoh_0",
+      "prices_book": "1cdG0lWeIlB9jqxWdpp7uSOPsgaPzYnsFQg53yNgbVhs",
+      "prices": true
+    },
+    "SUNSHINE": {
+      "aliases": ["Sunshine Nutrition", "SUNSHINE", "Sunshine"],
+      "shelves_book": "1xustRP7HtPHNiZTRnGZ1FU7T_nPLnyeP9PD4VxUvw1o",
+      "prices_book": "1zypeajL3S1Al5IWd-mMJsZ4KxAmt4cKerakPUHBzL38",
+      "prices": true
+    },
+    "Health Form": {
+      "aliases": ["Health Form", "HealthForm"],
+      "shelves_book": "1KxORIJezgLt85dLl6D_wHnsRYfNMwn1as9S_L32Swvc",
+      "prices_book": "1V-W2CAAjtIx-XZjFTa1XdiNKiu5rXbPHQDzhZZF4v8s",
+      "prices": true
+    },
+    "4ME": {
+      "aliases": ["4Me Nutrition", "4ME", "4Me"],
+      "shelves_book": "1slwJjO4mEn7umu6vH0bMbzuWGuAkfeVdekzTUExj-Ro",
+      "prices_book": "1FRVDzOie7JVYTLFO2C4D5QG8JR_TviwK_iek5zOBiS8",
+      "prices": true
+    }
+  }
+}

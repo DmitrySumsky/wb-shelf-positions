@@ -47,13 +47,17 @@ jobs:
 
       # Цены листа «Цены» той же книги. Отдельный вход, потому что кнопка «цены»
       # нужна чаще полок: цены меняются в течение дня, а обход полок — 5 минут.
-      - name: Снять цены и записать в книги брендов
+      # 10.08.2026: лист «Цены» переехал в отдельную книгу бренда (brands.json,
+      # поле prices_book) — кнопка и её вход не изменились.
+      - name: Снять цены и записать в книги цен брендов
         if: ${{ inputs.task == 'prices' || inputs.task == 'both' }}
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BRAND: ${{ inputs.brand }}
         run: |
-          python brand_prices.py --brand "${BRAND:-all}"
+          python brand_prices.py --brand "${BRAND:-all}" --notify-fail
 
       - name: Сохранить снапшоты как артефакт прогона
         if: always()
