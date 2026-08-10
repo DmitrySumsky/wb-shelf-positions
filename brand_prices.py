@@ -59,6 +59,16 @@ from vexor_shelves import install_retries
 SHEET_PRICES = "Цены"
 KEEP_DATES = 90
 
+# Градиент «дёшево зелёное → дорого красное» внутри блока товара, СВОЙ на каждую
+# дату (правило = блок × колонка): так цвет отвечает на вопрос «кто дешевле
+# конкурентов В ЭТОТ день», а не «за все дни разом». Правила Артура от 07.08
+# стояли на диапазоне блок × H:L целиком и новую колонку не захватывали — она
+# вставляется левее и выпадала из их диапазона. Теперь правила пересобирает
+# скрипт после каждой записи.
+GRADIENT_DATES = 30            # на сколько свежих дат держать градиент
+GRADIENT_MIN = {"red": 0.34117648, "green": 0.73333335, "blue": 0.5411765}
+GRADIENT_MAX = {"red": 0.9019608, "green": 0.4862745, "blue": 0.4509804}
+
 # Книги, где сбор цен включён. Лист «Цены» ведёт человек, поэтому книга
 # добавляется сюда осознанно, а не «раз есть лист — пишем».
 BRANDS_WITH_PRICES = ["Health Form"]
@@ -102,6 +112,77 @@ def prev_prices(values: list[list[str]], rows: list[dict], col: int) -> dict[int
             if val is not None:
                 out[r["row"]] = val
     return out
+
+
+def read_blocks(values: list[list[str]], lay: dict) -> list[tuple[int, int]]:
+    """Блоки товара как (первая строка, последняя строка), 1-based по листу.
+
+    Блок — подряд идущие строки с одинаковым «Товар» (пустое имя наследует
+    строку выше, как в «Полках»); пустая строка-разделитель блок закрывает.
+    """
+    it = lay["product"]
+    blocks: list[tuple[int, int]] = []
+    name, start, last = None, None, None
+    for i, raw in enumerate(values[1:], start=2):
+        cells = [str(x).strip() for x in raw]
+        fixed = cells[:lay["nfix"]]
+        cur = cells[it].strip() if len(cells) > it else ""
+        if not any(fixed):
+            if start:
+                blocks.append((start, last))
+            name, start, last = None, None, None
+            continue
+        if cur and cur != name:
+            if start:
+                blocks.append((start, last))
+            name, start = cur, i
+        elif start is None:
+            name, start = cur or name, i
+        last = i
+    if start:
+        blocks.append((start, last))
+    return [b for b in blocks if b[1] > b[0]]      # блок из одной строки не красим
+
+
+def rebuild_gradients(book, ws, lay: dict, blocks: list[tuple[int, int]],
+                      ndates: int) -> int:
+    """Правило-градиент на каждый блок × каждую свежую дату. Вернёт число правил.
+
+    Прежние правила скрипта снимаются целиком: строки и даты переезжают, и
+    подправить диапазон существующего правила дешевле только на бумаге. Правила
+    человека вне зоны дат (на фиксированных колонках) не трогаются.
+    """
+    nfix, sid = lay["nfix"], ws.id
+    meta = book.fetch_sheet_metadata(
+        {"fields": "sheets(properties/sheetId,conditionalFormats)"})
+    old = []
+    for s in meta.get("sheets", []):
+        if s.get("properties", {}).get("sheetId") != sid:
+            continue
+        old = s.get("conditionalFormats", []) or []
+    drop = [i for i, rule in enumerate(old)
+            if rule.get("gradientRule") and all(
+                r.get("startColumnIndex", 0) >= nfix for r in rule.get("ranges", []))]
+
+    reqs: list[dict] = []
+    for i in reversed(drop):                       # с конца: индексы съезжают
+        reqs.append({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}})
+    for col in range(nfix, nfix + min(ndates, GRADIENT_DATES)):
+        for top, bottom in blocks:
+            reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
+                "ranges": [{"sheetId": sid,
+                            "startRowIndex": top - 1, "endRowIndex": bottom,
+                            "startColumnIndex": col, "endColumnIndex": col + 1}],
+                "gradientRule": {
+                    "minpoint": {"colorStyle": {"rgbColor": GRADIENT_MIN},
+                                 "type": "MIN"},
+                    "midpoint": {"colorStyle": {"rgbColor": pts.WHITE},
+                                 "type": "PERCENTILE", "value": "50"},
+                    "maxpoint": {"colorStyle": {"rgbColor": GRADIENT_MAX},
+                                 "type": "MAX"}}}}})
+    for i in range(0, len(reqs), 300):
+        book.batch_update({"requests": reqs[i:i + 300]})
+    return len(reqs) - len(drop)
 
 
 def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
@@ -183,18 +264,20 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
     for r in rows:
         val = cells[r["row"]]
         if isinstance(val, int):
+            # Цвет числа целиком за градиентом блока (дёшево зелёное — дорого
+            # красное): условное форматирование рисуется ПОВЕРХ ручного фона,
+            # и раскраска «подешевело со вчера» под ним всё равно не видна.
+            # Считаем движение только для итоговой строки прогона.
             old = prev.get(r["row"])
-            if old is None or old == val:
-                continue
-            color = pts.COLOR_DOWN if val < old else pts.COLOR_UP
-            if val < old:
-                down += 1
-            else:
-                up += 1
-        elif val == pts.STATE_FAIL:
+            if old is not None and old != val:
+                if val < old:
+                    down += 1
+                else:
+                    up += 1
+            continue
+        if val == pts.STATE_FAIL:
             continue                      # дырку замера не красим
-        else:
-            color = pts.COLOR_STATE
+        color = pts.COLOR_STATE           # «нет в наличии» и прочий текст — серым
         reqs.append({"repeatCell": {
             "range": {"sheetId": ws.id, "startRowIndex": r["row"] - 1,
                       "endRowIndex": r["row"],
@@ -204,6 +287,11 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
 
     for i in range(0, len(reqs), 300):
         book.batch_update({"requests": reqs[i:i + 300]})
+
+    blocks = read_blocks(values, lay)
+    nrules = rebuild_gradients(book, ws, lay, blocks, ndates)
+    sp.log(f"Градиент по блокам: блоков {len(blocks)}, дат под градиентом "
+           f"{min(ndates, GRADIENT_DATES)}, правил {nrules}")
     return today, down, up
 
 
