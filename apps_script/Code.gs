@@ -17,7 +17,9 @@ var TOKEN_KEY = 'GH_TOKEN';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Полки WB')
-    .addItem('Обновить сейчас', 'updateShelves')
+    .addItem('Обновить полки', 'updateShelves')
+    .addItem('Обновить цены', 'updatePrices')
+    .addItem('Обновить всё', 'updateAll')
     .addItem('Открыть журнал прогонов', 'openRuns')
     .addSeparator()
     .addItem('Заменить токен GitHub', 'setToken')
@@ -47,7 +49,15 @@ function setToken() {
   ui.alert('Токен сохранён.');
 }
 
-function updateShelves() {
+function updateShelves() { dispatch_('shelves'); }
+function updatePrices()  { dispatch_('prices'); }
+function updateAll()     { dispatch_('both'); }
+
+/**
+ * Запуск прогона. task: shelves — только лист «Полки», prices — только лист
+ * «Цены», both — оба листа одним прогоном (цены идут после полок).
+ */
+function dispatch_(task) {
   var ui = SpreadsheetApp.getUi();
   var tok = token_();
   if (!tok) {
@@ -64,14 +74,16 @@ function updateShelves() {
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28'
     },
-    payload: JSON.stringify({ref: 'main', inputs: {brand: BRAND}}),
+    payload: JSON.stringify({ref: 'main', inputs: {brand: BRAND, task: task}}),
     muteHttpExceptions: true
   });
   var code = res.getResponseCode();
   if (code === 204) {
+    var what = task === 'prices' ? 'Цены' : (task === 'both' ? 'Полки и цены' : 'Полки');
+    var eta = task === 'prices' ? 'Цены снимаются ~минуту' : 'Полки обходятся ~5 минут';
     SpreadsheetApp.getActiveSpreadsheet().toast(
-      'Обновление запущено. Полки обходятся ~5 минут, потом колонка за сегодня ' +
-      'появится сама — перезагрузите страницу.', 'Полки ' + BRAND, 15);
+      'Обновление запущено. ' + eta + ', потом колонка за сегодня ' +
+      'появится сама — перезагрузите страницу.', what + ': ' + BRAND, 15);
   } else {
     // Тело ответа GitHub — единственное, что объясняет отказ (истёк токен,
     // нет прав на репозиторий, переименован workflow).

@@ -9,6 +9,10 @@ on:
         description: "NATURI | SUNSHINE | Health Form | 4ME | all"
         required: false
         default: "all"
+      task:
+        description: "что обновлять: shelves | prices | both"
+        required: false
+        default: "shelves"
 
 # Два нажатия подряд не должны обходить полки параллельно, но и отменять
 # начатый прогон не надо: он всё равно допишет колонку за сегодня.
@@ -31,6 +35,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Снять позиции и записать в книги брендов
+        if: ${{ inputs.task != 'prices' }}
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
@@ -39,6 +44,16 @@ jobs:
           BRAND: ${{ inputs.brand }}
         run: |
           python brand_shelves.py --brand "${BRAND:-all}"
+
+      # Цены листа «Цены» той же книги. Отдельный вход, потому что кнопка «цены»
+      # нужна чаще полок: цены меняются в течение дня, а обход полок — 5 минут.
+      - name: Снять цены и записать в книги брендов
+        if: ${{ inputs.task == 'prices' || inputs.task == 'both' }}
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          BRAND: ${{ inputs.brand }}
+        run: |
+          python brand_prices.py --brand "${BRAND:-all}"
 
       - name: Сохранить снапшоты как артефакт прогона
         if: always()

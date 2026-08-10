@@ -271,6 +271,13 @@ def main() -> None:
     else:
         match = [b for b in BRANDS_WITH_PRICES if b.lower() == args.brand.strip().lower()]
         if not match:
+            known = [b for b in bs.BRANDS if b.lower() == args.brand.strip().lower()]
+            if known:
+                # Кнопка «Обновить цены» стоит во всех книгах, а лист «Цены»
+                # ведётся не везде: это не ошибка прогона, просто нечего снимать.
+                print(f"Готово: у бренда {known[0]} сбор цен не включён "
+                      f"(есть у: {', '.join(BRANDS_WITH_PRICES)}) — нечего снимать")
+                return
             raise SystemExit(f"Сбор цен включён только для: {BRANDS_WITH_PRICES}; "
                              f"пришло {args.brand!r}")
         brands = match
