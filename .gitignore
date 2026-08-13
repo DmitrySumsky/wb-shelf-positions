@@ -16,3 +16,4 @@ __pycache__/
 
 # Карта «бренд → scriptId» для кнопки в книгах (чужие проекты, не код)
 apps_script/deployed.json
+apps_script/deployed_prices.json

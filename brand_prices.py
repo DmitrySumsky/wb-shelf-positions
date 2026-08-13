@@ -3,6 +3,27 @@
 """
 Цены по карточкам листа «Цены» ОТДЕЛЬНОЙ книги цен бренда.
 
+v2.2.0 — 13.08.2026
+  ЕЖЕДНЕВНЫЙ ПРОГОН ЦЕН ПАДАЛ ПО КВОТЕ SHEETS ТРИ ДНЯ ПОДРЯД (11–13.08):
+  «Quota exceeded for quota metric 'Write requests' … per minute per user» —
+  полная пересборка градиента это ~3 000 правил и десяток `batchUpdate` на
+  книгу, а книг четыре. Падало всегда на третьей (Health Form): колонка дня
+  записывалась, градиент — нет.
+  • градиент ежедневно ПРИРАЩИВАЕТСЯ: правила заводятся только на новую
+    колонку (правила прежних дат Sheets двигает сама при вставке) — один
+    запрос на книгу вместо десятка;
+  • полная пересборка осталась путём починки (`--gradient-only`);
+  • интрадей-прогоны больше не идут с `--no-gradient`: колонка, созданная ими
+    после упавшего суточного прогона, теперь тоже цветная.
+
+v2.1.0 — 13.08.2026
+  ГРАДИЕНТ ОТСТАЛ В КНИГЕ ЦЕН HEALTH FORM — 42 свежие даты из 72 стояли без
+  раскраски (правила покрывали только колонки 48–77, доставшиеся от прежнего
+  листа). Остальные три книги были покрыты полностью.
+  • `--gradient-only`: пересобрать условное форматирование, не снимая цен и не
+    трогая значения листа — чинится книга за один прогон, без ожидания суток;
+  • отчёт прогона печатает покрытие: блоков, дат под градиентом, правил.
+
 v2.0.0 — 10.08.2026
   ЦЕНЫ ПЕРЕЕХАЛИ ИЗ КНИГИ ПОЛОК В СВОЮ КНИГУ (просьба пользователя 10.08):
   • книга берётся из `brands.json` (поле `prices_book`), а не из книги полок;
@@ -46,9 +67,11 @@ v1.5.0 — 07.08.2026 · первая версия: цены по карточк
     «нет такого товара» — в строке нет артикула (у бренда нет карточки), снимать
                        нечего; так же помечает пустоту `brand_shelves.py`.
 
-Раскраска колонки: подешевело со вчера — зелёным, подорожало — красным,
-текстовые состояния — серым. Сравнение всегда со ВЧЕРАШНЕЙ колонкой, поэтому
-повторный прогон в тот же день не красит цену «сама с собой».
+Раскраска колонки — градиент внутри блока товара, свой на каждую дату: дешевле
+всех в блоке зелёное, дороже всех красное, 50-й перцентиль белый. Текстовые
+состояния (кроме «ошибка сбора») — серым фоном. Движение цены со вчера цветом
+не показывается: условное форматирование рисуется поверх ручного фона — оно
+остаётся счётчиком в итоге прогона.
 
 Запуск: шагом в shelves.yml после полок, интрадей-прогоном prices.yml либо руками:
     python brand_prices.py --brand all --creds ключ.json
@@ -168,22 +191,67 @@ def read_blocks(values: list[list[str]], lay: dict) -> list[tuple[int, int]]:
     return [b for b in blocks if b[1] > b[0]]      # блок из одной строки не красим
 
 
-def rebuild_gradients(book, ws, lay: dict, blocks: list[tuple[int, int]],
-                      ndates: int) -> int:
-    """Правило-градиент на каждый блок × каждую свежую дату. Вернёт число правил.
-
-    Прежние правила скрипта снимаются целиком: строки и даты переезжают, и
-    подправить диапазон существующего правила дешевле только на бумаге. Правила
-    человека вне зоны дат (на фиксированных колонках) не трогаются.
-    """
-    nfix, sid = lay["nfix"], ws.id
+def gradient_rules(book, ws) -> list[dict]:
+    """Правила условного форматирования листа, как их отдаёт Sheets."""
     meta = book.fetch_sheet_metadata(
         {"fields": "sheets(properties/sheetId,conditionalFormats)"})
-    old = []
     for s in meta.get("sheets", []):
-        if s.get("properties", {}).get("sheetId") != sid:
-            continue
-        old = s.get("conditionalFormats", []) or []
+        if s.get("properties", {}).get("sheetId") == ws.id:
+            return s.get("conditionalFormats", []) or []
+    return []
+
+
+def gradient_req(sid: int, col: int, top: int, bottom: int) -> dict:
+    """Одно правило: блок строк `top..bottom` в колонке `col` (0-based)."""
+    return {"addConditionalFormatRule": {"index": 0, "rule": {
+        "ranges": [{"sheetId": sid,
+                    "startRowIndex": top - 1, "endRowIndex": bottom,
+                    "startColumnIndex": col, "endColumnIndex": col + 1}],
+        "gradientRule": {
+            "minpoint": {"colorStyle": {"rgbColor": GRADIENT_MIN}, "type": "MIN"},
+            "midpoint": {"colorStyle": {"rgbColor": pts.WHITE},
+                         "type": "PERCENTILE", "value": "50"},
+            "maxpoint": {"colorStyle": {"rgbColor": GRADIENT_MAX},
+                         "type": "MAX"}}}}}
+
+
+def ensure_gradient_column(book, ws, lay: dict, blocks: list[tuple[int, int]],
+                           col: int) -> int:
+    """v2.2.0. Довести градиент до колонки `col` (0-based). Вернёт число правил.
+
+    Дешёвый ежедневный путь вместо полной пересборки. Правила уже стоящих дат
+    трогать незачем: при вставке колонки слева Sheets сама сдвигает их диапазоны
+    вправо вместе с данными — достаточно завести правила для НОВОЙ колонки.
+
+    Почему это важно: полная пересборка — это ~3 000 правил, десяток
+    `batchUpdate` на книгу, и на четырёх книгах подряд прогон упирался в квоту
+    Sheets «60 write requests в минуту на пользователя». С 11.08 по 13.08.2026
+    ежедневный прогон падал именно так, каждый раз на третьей книге (Health
+    Form): колонка записывалась, а градиент не пересобирался — в книге он
+    остался с прежнего листа и покрывал 30 старых дат из 72.
+    Здесь на книгу уходит один запрос: правил столько, сколько блоков.
+    """
+    if any(rule.get("gradientRule")
+           and any(r.get("startColumnIndex", 0) == col for r in rule.get("ranges", []))
+           for rule in gradient_rules(book, ws)):
+        return 0                                   # колонка уже под градиентом
+    reqs = [gradient_req(ws.id, col, top, bottom) for top, bottom in blocks]
+    if reqs:
+        book.batch_update({"requests": reqs})
+    return len(reqs)
+
+
+def rebuild_gradients(book, ws, lay: dict, blocks: list[tuple[int, int]],
+                      ndates: int) -> int:
+    """Полная пересборка: правило-градиент на каждый блок × каждую дату.
+
+    Путь починки (`--gradient-only`), а не ежедневный: он снимает все прежние
+    правила скрипта и заводит их заново, а это ~3 000 правил и десяток запросов
+    на книгу. Ежедневно колонка приращивается `ensure_gradient_column`.
+    Правила человека вне зоны дат (на фиксированных колонках) не трогаются.
+    """
+    nfix, sid = lay["nfix"], ws.id
+    old = gradient_rules(book, ws)
     drop = [i for i, rule in enumerate(old)
             if rule.get("gradientRule") and all(
                 r.get("startColumnIndex", 0) >= nfix for r in rule.get("ranges", []))]
@@ -193,17 +261,7 @@ def rebuild_gradients(book, ws, lay: dict, blocks: list[tuple[int, int]],
         reqs.append({"deleteConditionalFormatRule": {"sheetId": sid, "index": i}})
     for col in range(nfix, nfix + min(ndates, GRADIENT_DATES)):
         for top, bottom in blocks:
-            reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
-                "ranges": [{"sheetId": sid,
-                            "startRowIndex": top - 1, "endRowIndex": bottom,
-                            "startColumnIndex": col, "endColumnIndex": col + 1}],
-                "gradientRule": {
-                    "minpoint": {"colorStyle": {"rgbColor": GRADIENT_MIN},
-                                 "type": "MIN"},
-                    "midpoint": {"colorStyle": {"rgbColor": pts.WHITE},
-                                 "type": "PERCENTILE", "value": "50"},
-                    "maxpoint": {"colorStyle": {"rgbColor": GRADIENT_MAX},
-                                 "type": "MAX"}}}}})
+            reqs.append(gradient_req(sid, col, top, bottom))
     for i in range(0, len(reqs), 300):
         book.batch_update({"requests": reqs[i:i + 300]})
     return len(reqs) - len(drop)
@@ -214,11 +272,10 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
                  gradient: bool = True) -> tuple[str, int, int]:
     """Колонка цен за сегодня. Вернёт (дата, подешевело, подорожало).
 
-    `gradient=False` — не пересобирать условное форматирование: правила уже
-    покрывают сегодняшнюю колонку, а пересборка это ~3 000 правил и ~20 с на
-    книгу. Интрадей-прогоны (каждые 2 часа) переписывают колонку НА МЕСТЕ, им
-    пересобирать нечего; раз в сутки, когда колонка вставляется новая, градиент
-    строится заново.
+    `gradient=True` — довести градиент до сегодняшней колонки (с v2.2.0 это
+    один запрос: правила прежних дат Sheets двигает сама вместе с колонками).
+    `gradient=False` — не трогать условное форматирование вообще.
+    Полная пересборка живёт отдельно, в `--gradient-only`.
     """
     today = when.strftime("%d.%m")
     nfix = lay["nfix"]
@@ -322,10 +379,36 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
 
     if gradient:
         blocks = read_blocks(values, lay)
-        nrules = rebuild_gradients(book, ws, lay, blocks, ndates)
-        sp.log(f"Градиент по блокам: блоков {len(blocks)}, дат под градиентом "
-               f"{min(ndates, GRADIENT_DATES)}, правил {nrules}")
+        nrules = ensure_gradient_column(book, ws, lay, blocks, col - 1)
+        sp.log(f"Градиент на колонку {today}: блоков {len(blocks)}, "
+               f"новых правил {nrules}" + ("" if nrules else " (уже стояли)"))
     return today, down, up
+
+
+def gradient_only(client, brands: list[str]) -> tuple[list[str], list[str]]:
+    """v2.1.0. Пересобрать градиент в книгах, ничего не снимая и не записывая.
+
+    Нужен, когда книга отстала раскраской: в Health Form правила покрывали 30
+    старых колонок из 72 — новые даты приезжали числами без цвета, и починки
+    пришлось бы ждать до суточного прогона (интрадей идёт с `--no-gradient`).
+    Значений листа режим не касается вообще.
+    """
+    results: list[str] = []
+    failed: list[str] = []
+    for brand in brands:
+        try:
+            book, ws = open_prices_ws(client, brand)
+            _, lay, values = read_price_rows(ws)
+            blocks = read_blocks(values, lay)
+            ndates = len(lay["date_at"])
+            nrules = rebuild_gradients(book, ws, lay, blocks, ndates)
+            results.append(f"{brand}: градиент пересобран — блоков {len(blocks)}, "
+                           f"дат {min(ndates, GRADIENT_DATES)} из {ndates}, "
+                           f"правил {nrules}")
+        except Exception as exc:                        # noqa: BLE001
+            sp.log(f"ОШИБКА градиента {brand}: {exc.__class__.__name__}: {exc}")
+            failed.append(brand)
+    return results, failed
 
 
 def open_prices_ws(client, brand: str):
@@ -425,6 +508,8 @@ def main() -> None:
                     help="упавшие книги — сообщением в Telegram")
     ap.add_argument("--no-gradient", action="store_true",
                     help="не пересобирать условное форматирование (интрадей)")
+    ap.add_argument("--gradient-only", action="store_true",
+                    help="только пересобрать градиент, цены не снимать")
     args = ap.parse_args()
 
     enabled = brands_with_prices()
@@ -447,7 +532,10 @@ def main() -> None:
     install_retries()
     client = ts.get_client(args.creds)
 
-    results, failed = run_all(client, brands, args)
+    if args.gradient_only:
+        results, failed = gradient_only(client, brands)
+    else:
+        results, failed = run_all(client, brands, args)
     for line in results:
         print("Готово:", line)
     if failed:
