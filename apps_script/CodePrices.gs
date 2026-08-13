@@ -17,6 +17,10 @@ var REPO = 'DmitrySumsky/wb-shelf-positions';
 var WORKFLOW = 'brand-shelves.yml';
 var BRAND = '__BRAND__';
 var TOKEN_KEY = 'GH_TOKEN';
+// Отпечаток токена, зашитого при ПОСЛЕДНЕЙ заливке. Нужен, чтобы перезаливка с
+// другим токеном чинила книгу сама: свойство GH_TOKEN переживает `clasp push`,
+// и книга, куда однажды приехал негодный токен, отвечала бы 403 вечно.
+var SEED_KEY = 'GH_TOKEN_SEED';
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -30,14 +34,18 @@ function onOpen() {
 
 function token_() {
   var props = PropertiesService.getScriptProperties();
-  var saved = props.getProperty(TOKEN_KEY);
-  if (saved) return saved;
-  // Первый запуск: переносим зашитый при заливке токен в свойства скрипта,
-  // дальше он живёт только там и обновляется пунктом меню.
   var seeded = '__GH_TOKEN__';
-  if (seeded.indexOf('__') === 0) return '';
-  props.setProperty(TOKEN_KEY, seeded);
-  return seeded;
+  var hasSeed = seeded.indexOf('__') !== 0;   // плейсхолдер не заменён при заливке
+  if (hasSeed && props.getProperty(SEED_KEY) !== seeded) {
+    // Приехал НОВЫЙ зашитый токен — он и главный: 13.08.2026 в книги цен залили
+    // токен без права «Actions: write», и кнопка отвечала 403.
+    props.setProperty(TOKEN_KEY, seeded);
+    props.setProperty(SEED_KEY, seeded);
+    return seeded;
+  }
+  // Дальше токен живёт в свойствах скрипта: там его меняет пункт меню, и эта
+  // ручная замена перезаливкой того же кода не затирается.
+  return props.getProperty(TOKEN_KEY) || (hasSeed ? seeded : '');
 }
 
 function setToken() {

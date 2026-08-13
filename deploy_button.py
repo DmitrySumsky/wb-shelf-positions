@@ -18,9 +18,16 @@
 (по умолчанию `21.orders-cloud/github_token.txt`) во временную папку, откуда и
 идёт `clasp push`.
 
+Токен нужен ИМЕННО с правом `Actions: read and write` на этот репозиторий —
+`GH_PAT_SHELF_BUTTON` в `21.orders-cloud/api_keys_extra.txt`. Прочие локальные
+токены отдают «403 Resource not accessible by personal access token» уже при
+нажатии кнопки, а не при заливке.
+
 Запуск (нужен установленный и залогиненный clasp):
+    python deploy_button.py --target prices \
+        --token-file ../21.orders-cloud/api_keys_extra.txt \
+        --token-name GH_PAT_SHELF_BUTTON
     python deploy_button.py                      # книги полок, все бренды
-    python deploy_button.py --target prices      # книги цен, все бренды
     python deploy_button.py --brand SUNSHINE
     python deploy_button.py --update             # перезалить код в уже созданные
 
@@ -59,11 +66,24 @@ TARGETS = {
 }
 
 
-def read_token(path: str) -> str:
+def read_token(path: str, name: str | None = None) -> str:
+    """Токен из файла. `name` — имя строки в файле ключей вида «ИМЯ = значение».
+
+    Нужен, потому что токенов у пользователя несколько, а кнопке годится не
+    любой: 13.08.2026 в книги цен уехал `github_token.txt` (fine-grained на
+    другие репозитории), и GitHub ответил «403 Resource not accessible by
+    personal access token». Право `Actions: read and write` на
+    `wb-shelf-positions` есть только у `GH_PAT_SHELF_BUTTON`.
+    """
     with open(path, encoding="utf-8") as f:
-        raw = f.read().strip()
+        raw = f.read()
+    if name:
+        m = re.search(rf"^\s*{re.escape(name)}\s*[=:]\s*(\S+)", raw, re.M)
+        if not m:
+            raise SystemExit(f"В {path} нет строки {name}")
+        return m.group(1)
     # В файле токен лежит в виде «Bearer github_pat_…» — берём само значение.
-    return raw.split()[-1]
+    return raw.strip().split()[-1]
 
 
 def load_state(target: dict) -> dict:
@@ -141,12 +161,14 @@ def main() -> None:
     ap.add_argument("--target", default="shelves", choices=sorted(TARGETS),
                     help="shelves — книга полок, prices — книга цен")
     ap.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
+    ap.add_argument("--token-name", default=None,
+                    help="имя строки в файле ключей, напр. GH_PAT_SHELF_BUTTON")
     ap.add_argument("--update", action="store_true",
                     help="только перезалить код в уже созданные проекты")
     args = ap.parse_args()
     target = TARGETS[args.target]
 
-    token = read_token(args.token_file)
+    token = read_token(args.token_file, args.token_name)
     if not token.startswith(("github_pat_", "ghp_", "ghs_")):
         raise SystemExit(f"В {args.token_file} не похоже на токен GitHub")
 
