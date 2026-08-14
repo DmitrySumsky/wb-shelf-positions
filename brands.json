@@ -1,7 +1,7 @@
 {
   "_комментарий": "Центральные настройки книг брендов: полки, цены, глубина истории, оповещения. Единственное место, где заведены ID таблиц — скрипты берут их отсюда (wb_config.py). Новый бренд = новый блок в brands, больше нигде править не надо.",
-  "version": "2.0.0",
-  "updated": "2026-08-10",
+  "version": "2.2.0",
+  "updated": "2026-08-14",
 
   "dest": -1257786,
   "keep_dates": 90,
@@ -48,6 +48,14 @@
       "shelves_book": "1slwJjO4mEn7umu6vH0bMbzuWGuAkfeVdekzTUExj-Ro",
       "prices_book": "1FRVDzOie7JVYTLFO2C4D5QG8JR_TviwK_iek5zOBiS8",
       "prices": true
+    },
+    "Upgrade": {
+      "_комментарий": "14.08.2026. Пятый бренд. Свой список товаров и конкурентов (19 групп, свои Ключи и цены), поэтому донор новых товаров ему не указ — sync: false. Цены пока ведёт человек колонками «цена»/«Цена» в самом листе, книги цен нет.",
+      "aliases": ["Upgrade", "UPGRADE", "Апгрейд"],
+      "shelves_book": "1RvXdJvcxutbm1EYklIYY5Sgo9OSaPuzYrmLujw32iBo",
+      "prices_book": "",
+      "prices": false,
+      "sync": false
     }
   }
 }

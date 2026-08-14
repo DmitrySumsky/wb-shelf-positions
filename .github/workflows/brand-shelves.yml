@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       brand:
-        description: "NATURI | SUNSHINE | Health Form | 4ME | all"
+        description: "NATURI | SUNSHINE | Health Form | 4ME | Upgrade | all"
         required: false
         default: "all"
       task:

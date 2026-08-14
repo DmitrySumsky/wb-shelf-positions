@@ -66,6 +66,10 @@ for _name, _b in CFG["brands"].items():
         "prices_book": os.environ.get(f"PRICES_ID_{_k}") or _b.get("prices_book", ""),
         "prices": bool(_b.get("prices", False)) and bool(
             os.environ.get(f"PRICES_ID_{_k}") or _b.get("prices_book")),
+        # v2.2.0. Бренд с собственным списком товаров (Upgrade) не должен
+        # принимать группы из книги-донора: у него свои 19 групп и свои
+        # конкуренты, а `--sync-groups --brand all` залил бы ему чужие 43.
+        "sync": bool(_b.get("sync", True)),
     }
 
 

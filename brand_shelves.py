@@ -852,7 +852,10 @@ def main() -> None:
     results, failed = [], []
     for brand in brands:
         try:
-            results.append(run_brand(client, brand, args, None if brand == donor else ref))
+            # Донору свои же товары не переносим, бренду с `sync: false` — чужие
+            # (у Upgrade собственный список групп, см. brands.json).
+            take_ref = ref if brand != donor and BRANDS[brand].get("sync", True) else None
+            results.append(run_brand(client, brand, args, take_ref))
         except Exception as exc:
             # Один бренд не должен ронять остальные: книга может быть закрыта,
             # лист переименован, полки не отдаться — остальные три обновятся.
