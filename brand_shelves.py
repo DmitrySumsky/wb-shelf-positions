@@ -73,6 +73,7 @@ import gspread
 import shelf_positions as sp
 import to_sheets as ts
 import wb_config
+from mpcore import states as mp_states
 from vexor_shelves import install_retries
 
 # Книги брендов (папка «Анализ конкурентов» на Drive). ID не секрет.
@@ -109,8 +110,10 @@ SYNC_FROM = wb_config.SYNC_FROM   # книга-донор по умолчани�
 SYNC_SKIP = wb_config.SYNC_SKIP
 
 NOT_IN_SHELF = "—"
-STATE_GONE = "нет карточки"
-STATE_FAIL = "ошибка сбора"
+# Состояния замера — из ядра (`mp-core`): одни и те же строки лежали
+# копиями в четырёх файлах проекта, и правка одной до других не доезжала.
+STATE_GONE = mp_states.STATE_GONE
+STATE_FAIL = mp_states.STATE_FAIL
 # v1.4. Группа, которую мерить нечем (у бренда нет карточки товара). Раньше её
 # строки оставались пустыми, и по листу это читалось как «скрипт сломался на
 # середине». Пишем прямым текстом — видно, что прошли весь лист.

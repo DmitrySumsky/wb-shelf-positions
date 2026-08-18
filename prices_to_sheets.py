@@ -50,6 +50,8 @@ import gspread
 
 import shelf_positions as sp
 import to_sheets as ts
+from mpcore import states as mp_states
+from mpcore import wb_card
 
 SHEET_PRICES = "Цены"
 PRICE_FIX = ["Товар", "Артикул", "Бренд", "Чей"]
@@ -62,48 +64,42 @@ COLOR_STATE = {"red": 0.93, "green": 0.93, "blue": 0.93}  # нет в налич
 COLOR_OURS = {"red": 0.85, "green": 0.91, "blue": 0.98}   # наши строки, фикс-колонки
 WHITE = {"red": 1, "green": 1, "blue": 1}
 
-STATE_NONE = "нет в наличии"
-STATE_GONE = "нет карточки"
-STATE_FAIL = "ошибка сбора"
+# Состояния замера и расчёт цены — из ядра (`mp-core`): те же строки
+# лежали копиями в четырёх файлах этого проекта и ещё в соседнем.
+STATE_NONE = mp_states.STATE_NONE
+STATE_GONE = mp_states.STATE_GONE
+STATE_FAIL = mp_states.STATE_FAIL
 
 
 def wallet_price(kopecks: int) -> int:
     # Именно floor, не round: сверено с MPStats на 10 парах день/артикул.
-    return math.floor(kopecks / 100 * 0.98)
+    return wb_card.wallet_price(kopecks)
 
 
 def fetch_prices(nm_ids: list[int], dest: int) -> dict[int, int | str]:
-    """{nmID: цена с кошельком | STATE_*} по всем артикулам, батчами по 100."""
+    """{nmID: цена с кошельком | STATE_*} по всем артикулам, батчами по 100.
+
+    Обход витрины живёт в ядре; здесь остаётся сессия, приведение ключей к
+    числам (вся раскладка листа считает артикул числом) и одно отличие от
+    поведения ядра по умолчанию.
+
+    Отличие такое: пустое тело ответа на ОДИН артикул означает «карточки
+    нет», а на пачку из ста — что не отдалась вся пачка. Второе — дырка
+    замера, а не факт о сотне товаров, поэтому здесь она превращается в
+    сбой батча. Ключей таких артикулов в ответе не будет вовсе, а
+    вызывающий код берёт значение через `.get(nm, STATE_FAIL)` и сам
+    подставит «ошибку сбора», ничего не затирая в таблице.
+    """
     session = sp._session()
-    out: dict[int, int | str] = {}
-    for i in range(0, len(nm_ids), 100):
-        chunk = nm_ids[i:i + 100]
-        params = {"appType": "1", "curr": "rub", "spp": "30", "dest": str(dest),
-                  "nm": ";".join(str(x) for x in chunk)}
-        data = sp._get_json(session, sp.CARD_URL, params)
-        if data is None or data is sp.EMPTY:
-            # Сетевой сбой всего батча — это НЕ «цены нет», это дырка замера.
-            for nm in chunk:
-                out[nm] = STATE_FAIL
-            continue
-        got: dict[int, int | None] = {}
-        for p in (data.get("products") or []):
-            kop = None
-            for size in p.get("sizes") or []:
-                pr = (size.get("price") or {}).get("product")
-                if pr:
-                    kop = pr
-                    break
-            got[p["id"]] = kop
-        for nm in chunk:
-            if nm not in got:
-                out[nm] = STATE_GONE      # карточка удалена/скрыта на WB
-            elif not got[nm]:
-                out[nm] = STATE_NONE      # карточка есть, товара в продаже нет
-            else:
-                out[nm] = wallet_price(got[nm])
-        time.sleep(0.2)
-    return out
+
+    def fetch(url, headers=None, params=None, **kw):
+        data = sp._get_json(session, url, params)
+        if data is sp.EMPTY and ";" in (params or {}).get("nm", ""):
+            return None
+        return data
+
+    prices = wb_card.prices([str(nm) for nm in nm_ids], dest=str(dest), fetch=fetch)
+    return {int(nm): value for nm, value in prices.items()}
 
 
 def build_rows(groups: list[dict]) -> list[dict]:

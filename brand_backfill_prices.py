@@ -57,6 +57,7 @@ import backfill_prices as bfl
 import brand_prices as bp
 import brand_shelves as bs
 import shelf_positions as sp
+from mpcore import mpstats
 import to_sheets as ts
 from vexor_shelves import install_retries
 
@@ -77,30 +78,14 @@ def read_mp_token(path: str) -> str:
 
 
 def mp_history(nm: str, token: str, tries: int = 4) -> dict[str, int]:
-    """MPStats: {ISO-дата: цена с кошельком}. Недоступно — пустой словарь."""
-    url = f"https://mpstats.io/api/wb/get/item/{nm}/sales"
-    req = urllib.request.Request(
-        url, headers={"X-Mpstats-TOKEN": token, "Content-Type": "application/json"})
-    rows = None
-    for i in range(tries):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                rows = json.loads(r.read())
-            break
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503):
-                sp.time.sleep(1.0 * (i + 1))
-                continue
-            return {}
-        except Exception:
-            sp.time.sleep(0.7 * (i + 1))
-    out: dict[str, int] = {}
-    if isinstance(rows, list):
-        for r in rows:
-            d, v = r.get("data"), (r.get("wallet_price") or r.get("final_price"))
-            if d and v:
-                out[d] = round(v)
-    return out
+    """MPStats: {ISO-дата: цена с кошельком}. Недоступно — пустой словарь.
+
+    Клиент — в ядре (`mp-core`). Там же различаются транзиентный отказ и
+    исчерпанная суточная квота: квоту ретраить бессмысленно, а в логе она
+    обязана называться своим именем.
+    """
+    client = mpstats.Client(token, mpstats.KIND_WB)
+    return client.history(nm)
 
 
 def iso_to_label(iso: str) -> str:

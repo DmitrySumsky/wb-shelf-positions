@@ -27,37 +27,23 @@ import os
 import urllib.error
 import urllib.request
 
-API = "https://api.telegram.org/bot{token}/sendMessage"
+from mpcore import notify as mp_notify
+
+API = mp_notify.API
 LIMIT = 3900              # запас к лимиту 4096 на служебные хвосты
 
 
 def _targets() -> list[tuple[str, int | None]]:
-    raw = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
-    out: list[tuple[str, int | None]] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        chat, _, topic = part.partition(":")
-        thread = None
-        if topic.strip().isdigit() and topic.strip() != "1":
-            thread = int(topic.strip())
-        out.append((chat.strip(), thread))
-    return out
+    """Получатели из настройки. Разбор — в ядре (`mp-core`), включая правило
+    про тему «General»: её номер 1 в API передавать нельзя."""
+    return [(chat, int(thread) if thread else None)
+            for chat, thread in mp_notify.parse_targets(
+                os.environ.get("TELEGRAM_CHAT_ID"))]
 
 
 def _chunks(text: str) -> list[str]:
-    if len(text) <= LIMIT:
-        return [text]
-    parts, cur = [], ""
-    for line in text.split("\n"):
-        if len(cur) + len(line) + 1 > LIMIT:
-            parts.append(cur.rstrip())
-            cur = ""
-        cur += line + "\n"
-    if cur.strip():
-        parts.append(cur.rstrip())
-    return parts
+    """Нарезка под лимит сообщения — в ядре: строку пополам не рвём."""
+    return mp_notify.split_text(text, LIMIT)
 
 
 def send(text: str, silent: bool = False) -> bool:

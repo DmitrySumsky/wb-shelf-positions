@@ -1,2 +1,5 @@
+# Общее ядро сборщиков — ПО ТЕГУ, а не с ветки: коммит в ядро
+# не должен уронить всех потребителей разом.
+mp-core @ git+https://github.com/DmitrySumsky/mp-core@v0.3.0
 requests>=2.31
 gspread>=6.0

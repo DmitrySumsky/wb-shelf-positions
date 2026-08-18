@@ -40,19 +40,23 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-RECOM_URL = "https://recom.wb.ru/recom/ru/common/v8/search"
-CARD_URL = "https://card.wb.ru/cards/v4/detail"
+from mpcore import http as mp_http
+from mpcore import states as mp_states
+from mpcore import transport as mp_transport
+from mpcore import wb_card
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
-HEADERS = {
-    "User-Agent": UA,
-    "Accept": "*/*",
-    "Origin": "https://www.wildberries.ru",
-    "Referer": "https://www.wildberries.ru/",
-}
+RECOM_URL = "https://recom.wb.ru/recom/ru/common/v8/search"
+# Адрес витрины, её заголовки, регион и состояния замера живут в ядре
+# (`mp-core`): раньше эти же строки лежали копиями в четырёх файлах, и
+# правка в одном месте до остальных не доезжала. Локальные имена
+# оставлены псевдонимами — весь зависимый код продолжает работать как был.
+CARD_URL = wb_card.CARD_URL
+STATE_NONE = mp_states.STATE_NONE
+STATE_GONE = mp_states.STATE_GONE
+STATE_FAIL = mp_states.STATE_FAIL
+
+UA = wb_card.USER_AGENT
+HEADERS = dict(wb_card.HEADERS)
 
 # Параметры полки — ровно те, что зашиты в расширении (объект OFt).
 SHELF_PARAMS = {
@@ -85,30 +89,22 @@ def _session() -> requests.Session:
 
 # HTTP 200 с пустым телом — это штатный ответ WB на несуществующий артикул,
 # а не сбой. Ретраить его бессмысленно, и мешать с сетевой ошибкой нельзя.
-EMPTY = object()
+# Метка одна на всё ядро: сравнение `is EMPTY` идёт через границы модулей.
+EMPTY = mp_http.EMPTY
 
 
 def _get_json(session: requests.Session, url: str, params: dict, tries: int = 4):
-    """GET с экспоненциальным backoff. Возвращает dict, EMPTY или None (сбой)."""
-    delay = 1.0
-    for attempt in range(1, tries + 1):
-        try:
-            r = session.get(url, params=params, timeout=25)
-            if r.status_code == 200:
-                if not r.content.strip():
-                    return EMPTY
-                return r.json()
-            # 429/5xx — ждём дольше, остальное тоже ретраим, но без надежды
-            if attempt == tries:
-                log(f"  HTTP {r.status_code} после {tries} попыток: {url}")
-                return None
-        except Exception as exc:
-            if attempt == tries:
-                log(f"  сеть отвалилась после {tries} попыток ({exc.__class__.__name__}): {url}")
-                return None
-        time.sleep(delay + random.uniform(0, 0.4))
-        delay *= 2
-    return None
+    """GET с экспоненциальным backoff. Возвращает dict, EMPTY или None (сбой).
+
+    Ретраи и разбор отказов — в ядре (`mp-core`), здесь остаётся сессия и
+    журнал: сообщение о сбое в логе прогона важнее, чем то, кто именно
+    считал попытки.
+    """
+    result = mp_http.get_json(url, params=params, tries=tries, timeout=25,
+                              transport=mp_transport.Requests(session))
+    if result is None:
+        log(f"  не отдалось после {tries} попыток: {url}")
+    return result
 
 
 def collect_shelf(session: requests.Session, competitor_nm: int, dest: int,
