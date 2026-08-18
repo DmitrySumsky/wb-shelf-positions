@@ -3,6 +3,12 @@
 """
 Разовая заводка листа «Цены» в ОТДЕЛЬНОЙ книге цен бренда.
 
+v1.1.0 — 18.08.2026
+  ШЕСТОЙ БРЕНД ORZAX БЕЗ ИСТОРИИ ДОНОРА — заводка книги цен кабинета ИП1.
+  • `--no-history`: лист заводится пустым по датам. У Orzax свои карточки
+    (перекупы того же товара), в доноре Health Form их нет ни одной, и без
+    флага в книгу приехали бы 70 пустых колонок-дат «на всякий случай».
+
 v1.0.0 — 10.08.2026
   ЦЕНЫ ЖИЛИ ЛИСТОМ ВНУТРИ КНИГИ ПОЛОК — просьба пользователя 10.08 разнести их
   по своим таблицам (по одной на бренд, ID — в `brands.json`).
@@ -151,18 +157,23 @@ def format_sheet(book, ws, ndates: int, nrows: int) -> None:
                 "wrapStrategy": "WRAP"}},
             "fields": "userEnteredFormat(backgroundColor,textFormat,"
                       "horizontalAlignment,wrapStrategy)"}},
-        {"repeatCell": {
-            "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": nrows,
-                      "startColumnIndex": nfix, "endColumnIndex": nfix + ndates},
-            "cell": {"userEnteredFormat": {
-                "horizontalAlignment": "CENTER",
-                "numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}},
-            "fields": "userEnteredFormat(horizontalAlignment,numberFormat)"}},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                      "startIndex": nfix, "endIndex": nfix + ndates},
-            "properties": {"pixelSize": DATE_WIDTH}, "fields": "pixelSize"}},
     ]
+    # Книга без истории (ORZAX, v1.1.0) заводится вообще без колонок-дат: пустой
+    # диапазон Sheets не принимает, а первую колонку всё равно вставит прогон.
+    if ndates:
+        reqs += [
+            {"repeatCell": {
+                "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": nrows,
+                          "startColumnIndex": nfix, "endColumnIndex": nfix + ndates},
+                "cell": {"userEnteredFormat": {
+                    "horizontalAlignment": "CENTER",
+                    "numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}},
+                "fields": "userEnteredFormat(horizontalAlignment,numberFormat)"}},
+            {"updateDimensionProperties": {
+                "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                          "startIndex": nfix, "endIndex": nfix + ndates},
+                "properties": {"pixelSize": DATE_WIDTH}, "fields": "pixelSize"}},
+        ]
     for i, width in enumerate(FIX_WIDTHS):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws.id, "dimension": "COLUMNS",
@@ -261,6 +272,8 @@ def main() -> None:
                     help="дописать в существующий лист недостающие группы")
     ap.add_argument("--archive-source", action="store_true",
                     help="переименовать исходный лист «Цены» в книге полок")
+    ap.add_argument("--no-history", action="store_true",
+                    help="завести лист без истории донора (карточек бренда в нём нет)")
     ap.add_argument("--force", action="store_true",
                     help="перезаписать уже заведённый лист (по умолчанию пропускаю)")
     args = ap.parse_args()
@@ -277,16 +290,20 @@ def main() -> None:
         return
 
     # Историю читаем из книги-донора один раз: она общая для всех новых книг.
-    donor_book = client.open_by_key(bs.BRANDS[HISTORY_FROM]["sheet_id"])
-    try:
-        donor_ws = donor_book.worksheet(SHEET_PRICES)
-    except gspread.WorksheetNotFound:                  # донор уже переехал
-        donor_ws = client.open_by_key(
-            wb_config.prices_book(HISTORY_FROM)).worksheet(SHEET_PRICES)
-    dates, hist, caps = history_map(donor_ws)
-    sp.log(f"Донор истории — {HISTORY_FROM}: дат {len(dates)} "
-           f"({dates[0]} … {dates[-1]}), карточек {len(hist)}, "
-           f"из них с «Капсул» {sum(1 for v in caps.values() if v)}")
+    if args.no_history:
+        dates, hist, caps = [], {}, {}
+        sp.log("Заводка без истории: колонок-дат не будет, первую допишет прогон цен")
+    else:
+        donor_book = client.open_by_key(bs.BRANDS[HISTORY_FROM]["sheet_id"])
+        try:
+            donor_ws = donor_book.worksheet(SHEET_PRICES)
+        except gspread.WorksheetNotFound:               # донор уже переехал
+            donor_ws = client.open_by_key(
+                wb_config.prices_book(HISTORY_FROM)).worksheet(SHEET_PRICES)
+        dates, hist, caps = history_map(donor_ws)
+        sp.log(f"Донор истории — {HISTORY_FROM}: дат {len(dates)} "
+               f"({dates[0]} … {dates[-1]}), карточек {len(hist)}, "
+               f"из них с «Капсул» {sum(1 for v in caps.values() if v)}")
 
     results = []
     for brand in brands:

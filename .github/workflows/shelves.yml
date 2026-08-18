@@ -82,8 +82,9 @@ jobs:
           VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
         run: python vexor_shelves.py
 
-  # Книги брендов: один бренд = одно задание, все пять идут параллельно
-  # (Upgrade добавлен 14.08.2026, книга «Анализ конкурентов Апгрейд»).
+  # Книги брендов: один бренд = одно задание, все шесть идут параллельно
+  # (Upgrade добавлен 14.08.2026, книга «Анализ конкурентов Апгрейд»;
+  # ORZAX — 18.08.2026, кабинет ИП1, конкуренты-перекупы того же товара).
   # fail-fast: false — упавший бренд не отменяет остальные.
   brands:
     name: Полки ${{ matrix.brand }}
@@ -92,7 +93,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        brand: [NATURI, SUNSHINE, "Health Form", 4ME, Upgrade]
+        brand: [NATURI, SUNSHINE, "Health Form", 4ME, Upgrade, ORZAX]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
