@@ -344,15 +344,16 @@ def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict
     all_ours = sorted({o for g in groups for o in g["ours"]})
     visited = [c for c in all_comps if str(c) in shelves_in]
     status_of = {c: (shelves_in[str(c)].get("s") or "failed") for c in visited}
-    # v2.4.2. Пустая полка у ЖИВОЙ карточки — не «карточки нет»: анонимная
-    # витрина с 22.09 отдаёт пустое тело по части полок (42 % в первом сборе),
-    # хотя карточка продаётся. Это «не смогли измерить» = ошибка сбора.
+    # v2.4.3. Пустая полка у ЖИВОЙ карточки — не «карточки нет» и не сбой: с
+    # 22.09 WB у части товаров вообще не показывает блок «Похожие» (на странице
+    # только «Продавец рекомендует»; сверено вручную, анонимно и под входом
+    # покупателя ответ одинаково пустой). Это «полки нет» — отдельное состояние.
     cards_alive = recorded.get("cards") or {}
-    empty_alive = [c for c in visited if status_of[c] == "missing" and str(c) in cards_alive]
-    for c in empty_alive:
-        status_of[c] = "failed"
-    if empty_alive:
-        log(f"Пустая полка у живой карточки (пишу «ошибка сбора»): {len(empty_alive)}")
+    no_shelf = [c for c in visited if status_of[c] == "missing" and str(c) in cards_alive]
+    for c in no_shelf:
+        status_of[c] = "noshelf"
+    if no_shelf:
+        log(f"Полки «Похожие» у живой карточки нет (пишу «полки нет»): {len(no_shelf)}")
     failed = [c for c in visited if status_of[c] == "failed"]
     missing = [c for c in visited if status_of[c] == "missing"]
     lost = len(all_comps) - len(visited)
@@ -383,6 +384,7 @@ def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict
         "competitors": all_comps,
         "failed_shelves": [str(c) for c in failed],
         "missing_shelves": [str(c) for c in missing],
+        "noshelf_shelves": [str(c) for c in no_shelf],
         "cards": {str(c): {"brand": (cards.get(str(c)) or {}).get("b", ""),
                            "name": (cards.get(str(c)) or {}).get("n", ""),
                            "supplierId": (cards.get(str(c)) or {}).get("sid")}

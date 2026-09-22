@@ -118,6 +118,10 @@ STATE_FAIL = mp_states.STATE_FAIL
 # строки оставались пустыми, и по листу это читалось как «скрипт сломался на
 # середине». Пишем прямым текстом — видно, что прошли весь лист.
 STATE_NO_PRODUCT = "нет такого товара"
+# v2.4.3 (22.09.2026). У живой карточки конкурента WB не показывает блок
+# «Похожие» вовсе — мерить не в чем. Не «—» (там полка есть, нас в ней нет) и
+# не «ошибка сбора» (ответ получен, он пустой).
+STATE_NO_SHELF = "полки нет"
 
 # Раскраска позиций — условным форматированием (шесть правил на любой размер листа),
 # как в листе «Полки» книги VEXOR: ячеек тут десятки тысяч, красить их поштучно дорого.
@@ -577,6 +581,7 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
     """{номер строки листа: значение за сегодня}."""
     failed = set(snapshot.get("failed_shelves", []))
     missing = set(snapshot.get("missing_shelves", []))
+    noshelf = set(snapshot.get("noshelf_shelves", []))
     positions = snapshot.get("positions", {})
     visited = set(snapshot.get("shelves", {}))     # какие полки вообще обходили
     our_of = {g["product"]: str(g["ours"][0]) for g in groups}
@@ -609,11 +614,13 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
                 out[r["row"]] = STATE_FAIL
             elif art in missing:
                 out[r["row"]] = STATE_GONE
+            elif art in noshelf:
+                out[r["row"]] = STATE_NO_SHELF
             else:
                 out[r["row"]] = positions.get(our, {}).get(art) or NOT_IN_SHELF
         else:
             row_pos = positions.get(our, {})
-            checked = [c for c in row_pos if c not in failed]
+            checked = [c for c in row_pos if c not in failed and c not in noshelf]
             found = sum(1 for c in checked if row_pos.get(c))
             # «5 из 12», а не «5/12»: Google на USER_ENTERED сделал бы из «5/12» дату.
             out[r["row"]] = f"{found} из {len(checked)}" if checked else ""
@@ -733,7 +740,7 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
         "booleanRule": {"condition": {"type": "NUMBER_GREATER", "values": [
             {"userEnteredValue": str(BANDS[-1][0])}]},
             "format": {"backgroundColor": COLOR_DEEP}}}}})
-    for text in (NOT_IN_SHELF, STATE_NO_PRODUCT):
+    for text in (NOT_IN_SHELF, STATE_NO_PRODUCT, STATE_NO_SHELF):
         reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
             "ranges": [rng],
             "booleanRule": {"condition": {"type": "TEXT_EQ", "values": [
@@ -814,6 +821,7 @@ def run_brand(client, brand: str, args, ref: tuple | None = None) -> str:
             f"{sum(1 for v in vals.values() if v == NOT_IN_SHELF)}, "
             f"нет карточки {sum(1 for v in vals.values() if v == STATE_GONE)}, "
             f"ошибок сбора {sum(1 for v in vals.values() if v == STATE_FAIL)}, "
+            f"полки нет {sum(1 for v in vals.values() if v == STATE_NO_SHELF)}, "
             f"строк без товара у бренда "
             f"{sum(1 for v in vals.values() if v == STATE_NO_PRODUCT)}"
             + (f", медиана {sorted(nums)[len(nums) // 2]}" if nums else ""))
