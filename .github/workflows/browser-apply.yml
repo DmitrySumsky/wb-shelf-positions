@@ -1,0 +1,75 @@
+name: Разнос сбора из браузера по книгам
+
+# v2.4 (22.09.2026). С 22.09 WB закрыл витрину антиботом для облака, и полки с
+# ценами снимает расширение в Chrome менеджера (кнопка «Обновить через браузер»
+# в книге бренда). Итог сбора расширение отдаёт в хаб (Apps Script), хаб
+# запускает ЭТОТ workflow. Здесь ничего не собирается с WB — только разносится
+# уже снятое по всем книгам контура тем же кодом, что писал колонку раньше,
+# и тут же перестраивается план на следующий сбор.
+on:
+  workflow_dispatch:
+    inputs:
+      contour:
+        description: "контур книг (brands.json → contours)"
+        required: false
+        default: "brands"
+      who:
+        description: "кто собирал (для сводки)"
+        required: false
+        default: ""
+
+concurrency:
+  group: browser-apply-${{ inputs.contour }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      SHELF_HUB_URL: ${{ secrets.SHELF_HUB_URL }}
+      SHELF_HUB_KEY: ${{ secrets.SHELF_HUB_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CONTOUR: ${{ inputs.contour }}
+      WHO: ${{ inputs.who }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Забрать итог сбора из хаба
+        run: python browser_job.py fetch --contour "$CONTOUR" --out browser_result.json
+
+      - name: Полки во все книги контура
+        id: shelves
+        run: python brand_shelves.py --brand all --from-browser browser_result.json
+
+      - name: Цены во все книги цен контура
+        id: prices
+        if: always() && steps.shelves.outcome != 'skipped'
+        run: python brand_prices.py --brand all --from-browser browser_result.json --notify-fail
+
+      - name: Новый план на следующий сбор
+        if: always()
+        run: python browser_job.py plan --contour "$CONTOUR" --push
+
+      - name: Сводка в Telegram
+        if: always()
+        run: |
+          python notify.py "Полки и цены обновлены из браузера${WHO:+ (собирал(а): $WHO)} — полки: ${{ steps.shelves.outcome }}, цены: ${{ steps.prices.outcome }}. Журнал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-${{ inputs.contour }}-${{ github.run_number }}
+          path: |
+            browser_result.json
+            snapshot_*.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -226,7 +226,7 @@ def run(our_nm: list[int], competitors: list[int], dest: int = DEST_MOSCOW,
 
 
 def run_groups(groups: list[dict], dest: int = DEST_MOSCOW, workers: int = 4,
-               max_positions: int = 600) -> dict:
+               max_positions: int = 600, recorded: dict | None = None) -> dict:
     """
     Проход по товарным группам.
 
@@ -235,7 +235,13 @@ def run_groups(groups: list[dict], dest: int = DEST_MOSCOW, workers: int = 4,
     Позиции считаются только внутри группы: наш «Магний» ищется в полках
     конкурентов по магнию, а не по коллагену. Полка каждого конкурента при этом
     забирается ОДИН раз, даже если он встречается в нескольких группах.
+
+    v2.4 (22.09.2026). `recorded` — полки, уже снятые расширением в браузере
+    менеджера (см. `browser_job.py`), вместо обхода WB отсюда: с 22.09 витрина
+    закрыта антиботом для облака. Дальше снапшот собирается тем же кодом.
     """
+    if recorded is not None:
+        return _groups_from_recorded(groups, dest, recorded)
     started = time.time()
     all_comps = sorted({c for g in groups for c in g["competitors"]})
     all_ours = sorted({o for g in groups for o in g["ours"]})
@@ -319,6 +325,65 @@ def run_groups(groups: list[dict], dest: int = DEST_MOSCOW, workers: int = 4,
     }
     log(f"Готово за {snapshot['elapsed_sec']} с. Найдено {found} из {pairs} пар.")
     return snapshot
+
+
+def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict:
+    """v2.4. Снапшот из записи браузера — той же формы, что у живого обхода.
+
+    `recorded` — {"at", "shelves": {nm: {"s": ok|missing|failed, "t": total,
+    "p": {наш_nm: позиция}}}, "cards": {nm: {"b", "n", "sid"}}}. Расширение
+    ищет в полке только наши карточки и бросает листать, как только нашло
+    все, поэтому здесь вместо списка полки — сразу карта позиций.
+
+    Полки, которой в записи нет вовсе (её завели в книге уже после того, как
+    расширение получило план), в снапшот не попадает: в колонке за день она
+    останется пустой, а не «—» — её сегодня не проверяли.
+    """
+    shelves_in = recorded.get("shelves") or {}
+    all_comps = sorted({c for g in groups for c in g["competitors"]})
+    all_ours = sorted({o for g in groups for o in g["ours"]})
+    visited = [c for c in all_comps if str(c) in shelves_in]
+    status_of = {c: (shelves_in[str(c)].get("s") or "failed") for c in visited}
+    failed = [c for c in visited if status_of[c] == "failed"]
+    missing = [c for c in visited if status_of[c] == "missing"]
+    lost = len(all_comps) - len(visited)
+    log(f"Полки из браузера: {len(visited)} из {len(all_comps)} "
+        f"(не было в плане {lost}, не отдались {len(failed)}, удалены {len(missing)})")
+
+    index = {c: {int(k): int(v) for k, v in (shelves_in[str(c)].get("p") or {}).items()}
+             for c in visited}
+    positions: dict[str, dict[str, int | None]] = {}
+    pairs = 0
+    for g in groups:
+        for our in g["ours"]:
+            row = positions.setdefault(str(our), {})
+            for comp in g["competitors"]:
+                if comp in index:
+                    row[str(comp)] = index[comp].get(our)
+                    pairs += 1
+
+    cards = recorded.get("cards") or {}
+    found = sum(1 for r in positions.values() for p in r.values() if p)
+    log(f"Найдено {found} из {pairs} пар.")
+    return {
+        "snapshot_at": recorded.get("at") or datetime.now(MSK).isoformat(timespec="seconds"),
+        "dest": dest,
+        "source": "браузер менеджера: www.wildberries.ru/__internal/u-recom (расширение)",
+        "groups": groups,
+        "our_nm": all_ours,
+        "competitors": all_comps,
+        "failed_shelves": [str(c) for c in failed],
+        "missing_shelves": [str(c) for c in missing],
+        "cards": {str(c): {"brand": (cards.get(str(c)) or {}).get("b", ""),
+                           "name": (cards.get(str(c)) or {}).get("n", ""),
+                           "supplierId": (cards.get(str(c)) or {}).get("sid")}
+                  for c in set(all_ours) | set(all_comps) if str(c) in cards},
+        "shelves": {str(c): {"total": shelves_in[str(c)].get("t"),
+                             "collected": None, "pages": shelves_in[str(c)].get("pg"),
+                             "status": status_of[c]} for c in visited},
+        "positions": positions,
+        "elapsed_sec": 0,
+    }
 
 
 def load_config(path: str) -> dict:

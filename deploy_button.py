@@ -49,7 +49,22 @@ import subprocess
 import sys
 import tempfile
 
+import wb_config
 from brand_shelves import BRANDS
+
+# v2.4 (22.09.2026). Адрес хаба сбора из браузера — не секрет (без ключа хаб
+# отдаёт только статус «когда собирали»). Публикация хаба — модуль
+# mp-core/modules/wb-shelf-browser, tools/deploy_hub.py.
+HUB_URL = os.environ.get("SHELF_HUB_URL", "")
+
+
+def contour_of(brand: str) -> str:
+    for name, c in (wb_config.CFG.get("contours") or {}).items():
+        if name.startswith("_"):
+            continue
+        if brand in c.get("brands", []):
+            return name
+    raise SystemExit(f"Бренд {brand} не входит ни в один контур brands.json")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "apps_script")
@@ -116,6 +131,10 @@ def deploy(brand: str, token: str, state: dict, update_only: bool,
     try:
         code = open(os.path.join(SRC, target["code"]), encoding="utf-8").read()
         code = code.replace("__BRAND__", brand).replace("__GH_TOKEN__", token)
+        # v2.4: кнопка «Обновить через браузер» — общий блок для обеих целей.
+        code += "
+
+" + open(os.path.join(SRC, "browser_button.gs"), encoding="utf-8").read()             .replace("__HUB_URL__", HUB_URL).replace("__CONTOUR__", contour_of(brand))
         # В проекте книги файл всегда один и называется Code.gs: имя файла в
         # репозитории (Code.gs / CodePrices.gs) — это выбор цели, а не имя,
         # под которым код лежит в таблице.
@@ -168,6 +187,9 @@ def main() -> None:
     args = ap.parse_args()
     target = TARGETS[args.target]
 
+    if not HUB_URL:
+        raise SystemExit("Нет SHELF_HUB_URL: адрес хаба (mp-core/modules/wb-shelf-browser/"
+                         "hub/deployed.json → url) — нужен кнопке «через браузер»")
     token = read_token(args.token_file, args.token_name)
     if not token.startswith(("github_pat_", "ghp_", "ghs_")):
         raise SystemExit(f"В {args.token_file} не похоже на токен GitHub")

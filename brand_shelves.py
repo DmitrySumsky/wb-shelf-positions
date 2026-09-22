@@ -622,6 +622,25 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict[in
 
 # ----------------------------------------------------------------------- запись
 
+def keep_known(values: list[list[str]], idx: int, new: dict[int, object]) -> dict[int, object]:
+    """v2.4 (22.09.2026). Повторный прогон того же дня не затирает замер сбоем.
+
+    Колонка за день пишется целиком, и прогон, которому WB не отдал полку,
+    ставил «ошибка сбора» поверх позиции, снятой час назад (в том числе
+    снятой из браузера менеджера). Сбой — это «сейчас не знаем», а не новое
+    значение: оставляем то, что уже стоит.
+    """
+    out = dict(new)
+    for row, val in new.items():
+        if val != STATE_FAIL:
+            continue
+        line = values[row - 1] if row - 1 < len(values) else []
+        old = str(line[idx]).strip() if idx < len(line) else ""
+        if old and old != STATE_FAIL:
+            out[row] = old
+    return out
+
+
 def write_column(book, ws, lay: dict, values: list[list[str]],
                  today_vals: dict[int, object], when: datetime) -> tuple[str, int]:
     """Колонка за сегодня. Даты левее — свежая слева, прежние съезжают вправо.
@@ -638,6 +657,7 @@ def write_column(book, ws, lay: dict, values: list[list[str]],
     if today in lay["date_at"]:
         col = lay["date_at"][today] + 1              # повторный прогон в тот же день
         ndates = len(lay["date_at"])
+        today_vals = keep_known(values, col - 1, today_vals)
     else:
         col = nfix + 1
         if ws.col_count < nfix + len(lay["date_at"]) + 1:
@@ -768,7 +788,8 @@ def run_brand(client, brand: str, args, ref: tuple | None = None) -> str:
             snapshot = json.load(f)
     else:
         snapshot = sp.run_groups(groups, dest=args.dest, workers=args.workers,
-                                 max_positions=args.max_positions)
+                                 max_positions=args.max_positions,
+                                 recorded=getattr(args, "recorded", None))
         if args.save_snapshots:
             with open(snap_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)
@@ -820,6 +841,8 @@ def main() -> None:
     ap.add_argument("--snapshot-in", default=None,
                     help="взять готовый снапшот вместо обхода полок (отладка)")
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
+    ap.add_argument("--from-browser", default=None,
+                    help="v2.4: запись расширения (JSON) вместо обхода WB из облака")
     ap.add_argument("--sync-groups", action="store_true",
                     help="дописать в книги товары, которые есть в книге-доноре")
     ap.add_argument("--sync-from", default=SYNC_FROM, help="книга-донор новых товаров")
@@ -834,6 +857,13 @@ def main() -> None:
         if not match:
             raise SystemExit(f"Неизвестный бренд {args.brand!r}; известны: {list(BRANDS)}")
         brands = match
+
+    args.recorded = None
+    if args.from_browser:
+        with open(args.from_browser, encoding="utf-8") as f:
+            args.recorded = json.load(f)
+        sp.log(f"Источник полок — браузер: запись от {args.recorded.get('at')}, "
+               f"полок {len(args.recorded.get('shelves') or {})}")
 
     install_retries()
     client = ts.get_client(args.creds)

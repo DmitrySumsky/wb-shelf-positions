@@ -25,7 +25,10 @@ var SEED_KEY = 'GH_TOKEN_SEED';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Цены WB')
-    .addItem('Обновить цены', 'updatePrices')
+    .addItem('🌐 Обновить все книги через браузер', 'browserUpdate')
+    .addSeparator()
+    // v2.4: облачный сбор — запасной путь на день, когда WB снова пустит облако.
+    .addItem('Из облака: обновить цены', 'updatePrices')
     .addItem('Открыть журнал прогонов', 'openRuns')
     .addSeparator()
     .addItem('Заменить токен GitHub', 'setToken')

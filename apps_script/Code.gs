@@ -17,9 +17,12 @@ var TOKEN_KEY = 'GH_TOKEN';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Полки WB')
-    .addItem('Обновить полки', 'updateShelves')
-    .addItem('Обновить цены', 'updatePrices')
-    .addItem('Обновить всё', 'updateAll')
+    .addItem('🌐 Обновить все книги через браузер', 'browserUpdate')
+    .addSeparator()
+    // v2.4: облачный сбор — запасной путь на день, когда WB снова пустит облако.
+    .addItem('Из облака: обновить полки', 'updateShelves')
+    .addItem('Из облака: обновить цены', 'updatePrices')
+    .addItem('Из облака: обновить всё', 'updateAll')
     .addItem('Открыть журнал прогонов', 'openRuns')
     .addSeparator()
     .addItem('Заменить токен GitHub', 'setToken')

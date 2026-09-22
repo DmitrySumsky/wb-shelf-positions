@@ -82,6 +82,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from datetime import datetime
 
 import gspread
@@ -92,6 +93,7 @@ import prices_to_sheets as pts
 import shelf_positions as sp
 import to_sheets as ts
 import wb_config
+from mpcore import wb_card
 from vexor_shelves import install_retries
 
 SHEET_PRICES = "Цены"
@@ -301,6 +303,11 @@ def write_column(book, ws, lay: dict, values: list[list[str]], rows: list[dict],
     for r in rows:
         cells[r["row"]] = (prices.get(int(r["nm"]), pts.STATE_FAIL) if r["nm"]
                            else STATE_NO_PRODUCT)
+    if today in lay["date_at"]:
+        # v2.4: сбор, которому WB не отдал цену, не затирает цену, уже снятую
+        # сегодня (интрадей раз в 2 часа шёл поверх данных из браузера).
+        kept = bs.keep_known(values, col - 1, cells)
+        cells = {k: _as_number(v) for k, v in kept.items()}
 
     letter = bs.col_letter(col)
     column = [[cells.get(i, "")] for i in range(2, nrows + 1)]
@@ -431,6 +438,39 @@ def stat_of(prices: dict[int, int | str], nm_ids: list[int]) -> str:
             f"ошибок сбора {sum(1 for v in mine if v == pts.STATE_FAIL)}")
 
 
+def _as_number(v):
+    """Цена, прочитанная из листа строкой («1 234» при формате #,##0), — числом."""
+    if isinstance(v, str):
+        digits = re.sub(r"[\s  ,]", "", v)
+        if digits.isdigit():
+            return int(digits)
+    return v
+
+
+def prices_from_recorded(recorded: dict, nm_ids: list[int]) -> dict[int, int | str]:
+    """v2.4 (22.09.2026). Цены из записи расширения — по правилам `wb_card.prices`.
+
+    В записи `cards[nm].k` — цена предложения в копейках (null = предложения
+    нет), `cards_failed` — артикулы пачек, которые WB не отдал. Артикул, про
+    который запрошенная пачка промолчала, — «нет карточки»; не запрошенный
+    вовсе (его не было в плане) — дырка замера, «ошибка сбора».
+    """
+    cards = recorded.get("cards") or {}
+    failed = {str(x) for x in recorded.get("cards_failed") or []}
+    asked = {str(x) for x in recorded.get("cards_asked") or []}
+    out: dict[int, int | str] = {}
+    for nm in nm_ids:
+        key = str(nm)
+        if key in cards:
+            k = cards[key].get("k")
+            out[nm] = wb_card.wallet_price(k) if k else pts.STATE_NONE
+        elif key in failed or key not in asked:
+            continue                              # get(..., STATE_FAIL) у потребителя
+        else:
+            out[nm] = pts.STATE_GONE
+    return out
+
+
 def run_all(client, brands: list[str], args) -> tuple[list[str], list[str]]:
     """Один обход WB на все книги цен. Вернёт (итоги, бренды с ошибкой).
 
@@ -460,7 +500,10 @@ def run_all(client, brands: list[str], args) -> tuple[list[str], list[str]]:
     union = sorted({nm for p in plans for nm in p["nm_ids"]})
     sp.log(f"Снимаю цены: книг {len(plans)}, уникальных карточек {len(union)} "
            f"(сумма по книгам {sum(len(p['nm_ids']) for p in plans)})")
-    prices = pts.fetch_prices(union, args.dest)
+    if getattr(args, "recorded", None) is not None:
+        prices = prices_from_recorded(args.recorded, union)
+    else:
+        prices = pts.fetch_prices(union, args.dest)
     sp.log("Итог сбора: " + stat_of(prices, union))
 
     results: list[str] = []
@@ -504,6 +547,8 @@ def main() -> None:
     ap.add_argument("--dest", type=int, default=wb_config.DEST)
     ap.add_argument("--save-snapshots", action="store_true", default=True)
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
+    ap.add_argument("--from-browser", default=None,
+                    help="v2.4: запись расширения (JSON) вместо обхода WB из облака")
     ap.add_argument("--notify-fail", action="store_true",
                     help="упавшие книги — сообщением в Telegram")
     ap.add_argument("--no-gradient", action="store_true",
@@ -528,6 +573,11 @@ def main() -> None:
             raise SystemExit(f"Сбор цен включён только для: {enabled}; "
                              f"пришло {args.brand!r}")
         brands = match
+
+    args.recorded = None
+    if args.from_browser:
+        with open(args.from_browser, encoding="utf-8") as f:
+            args.recorded = json.load(f)
 
     install_retries()
     client = ts.get_client(args.creds)

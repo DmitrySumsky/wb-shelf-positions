@@ -36,7 +36,16 @@ jobs:
       - name: Поставить зависимости
         run: pip install -r requirements.txt
 
+      # v2.4 (22.09.2026): WB закрыл витрину для облака. Закрыто — интрадей
+      # молча пропускается: иначе он каждые 2 часа ставил бы «ошибку сбора»
+      # поверх цен, снятых утром из браузера менеджера.
+      - name: Пускает ли WB облако
+        id: probe
+        run: |
+          if python browser_job.py probe; then echo "open=true" >> "$GITHUB_OUTPUT"; else echo "open=false" >> "$GITHUB_OUTPUT"; fi
+
       - name: Снять цены и записать в общую книгу
+        if: steps.probe.outputs.open == 'true'
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
@@ -46,7 +55,7 @@ jobs:
       # Книги цен брендов независимы от общей книги: падение одной не должно
       # отменять другую.
       - name: Снять цены и записать в книги брендов
-        if: always()
+        if: always() && steps.probe.outputs.open == 'true'
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
