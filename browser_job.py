@@ -136,9 +136,24 @@ def hub_call(action: str, contour: str, body: dict | None = None) -> dict:
     if body is None:
         r = requests.get(url, params=params, timeout=120)
     else:
-        r = requests.post(url, params=params, data=json.dumps(body, ensure_ascii=False)
-                          .encode("utf-8"), headers={"Content-Type": "text/plain"},
-                          timeout=120)
+        # v2.4.2. Редиректы POST проходим сами: из GitHub Actions script.google.com
+        # иногда сначала уводит на другой адрес того же скрипта, requests
+        # превращал POST в GET, и хаб отвечал «неизвестное действие put_plan».
+        # Ответ «уже обработано» — 302 на googleusercontent (его читаем GET),
+        # любой другой 30x — POST повторяется по новому адресу.
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        target, send_params = url, params
+        for _ in range(5):
+            r = requests.post(target, params=send_params, data=data,
+                              headers={"Content-Type": "text/plain"},
+                              timeout=120, allow_redirects=False)
+            loc = r.headers.get("Location", "")
+            if r.status_code not in (301, 302, 303, 307, 308) or not loc:
+                break
+            if "googleusercontent.com" in loc:
+                r = requests.get(loc, timeout=120)
+                break
+            target, send_params = loc, None
     try:
         data = r.json()
     except ValueError:

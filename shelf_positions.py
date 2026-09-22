@@ -344,6 +344,15 @@ def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict
     all_ours = sorted({o for g in groups for o in g["ours"]})
     visited = [c for c in all_comps if str(c) in shelves_in]
     status_of = {c: (shelves_in[str(c)].get("s") or "failed") for c in visited}
+    # v2.4.2. Пустая полка у ЖИВОЙ карточки — не «карточки нет»: анонимная
+    # витрина с 22.09 отдаёт пустое тело по части полок (42 % в первом сборе),
+    # хотя карточка продаётся. Это «не смогли измерить» = ошибка сбора.
+    cards_alive = recorded.get("cards") or {}
+    empty_alive = [c for c in visited if status_of[c] == "missing" and str(c) in cards_alive]
+    for c in empty_alive:
+        status_of[c] = "failed"
+    if empty_alive:
+        log(f"Пустая полка у живой карточки (пишу «ошибка сбора»): {len(empty_alive)}")
     failed = [c for c in visited if status_of[c] == "failed"]
     missing = [c for c in visited if status_of[c] == "missing"]
     lost = len(all_comps) - len(visited)
