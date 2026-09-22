@@ -132,9 +132,9 @@ def deploy(brand: str, token: str, state: dict, update_only: bool,
         code = open(os.path.join(SRC, target["code"]), encoding="utf-8").read()
         code = code.replace("__BRAND__", brand).replace("__GH_TOKEN__", token)
         # v2.4: кнопка «Обновить через браузер» — общий блок для обеих целей.
-        code += "
-
-" + open(os.path.join(SRC, "browser_button.gs"), encoding="utf-8").read()             .replace("__HUB_URL__", HUB_URL).replace("__CONTOUR__", contour_of(brand))
+        extra = open(os.path.join(SRC, "browser_button.gs"), encoding="utf-8").read()
+        code += "\n\n" + extra.replace("__HUB_URL__", HUB_URL) \
+            .replace("__CONTOUR__", contour_of(brand))
         # В проекте книги файл всегда один и называется Code.gs: имя файла в
         # репозитории (Code.gs / CodePrices.gs) — это выбор цели, а не имя,
         # под которым код лежит в таблице.
