@@ -138,6 +138,8 @@ def build_plan(client, contour: str) -> dict:
         "dest": wb_config.DEST,
         "max_positions": MAX_POSITIONS,
         "books": books,
+        # v2.5: планы поиска, которые расширение пройдёт после полок и цен.
+        "also": list((wb_config.CFG.get("contours") or {})[contour].get("also", [])),
         "shelves": {str(c): sorted(t) for c, t in sorted(shelves.items())},
         "cards": sorted(cards),
     }

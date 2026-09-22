@@ -23,7 +23,9 @@
     "all": {
       "title": "Все книги полок и цен",
       "brands": ["NATURI", "SUNSHINE", "Health Form", "4ME", "Upgrade", "ORZAX"],
-      "extra": ["vexor", "common"]
+      "extra": ["vexor", "common"],
+      "_also": "Контуры поиска книг «Позиции в поиске WB»: книга сама кладёт в хаб план (запросы и наши артикулы), расширение проходит его после полок и цен.",
+      "also": ["search-vexor"]
     },
     "brands": {
       "title": "Книги брендов",
