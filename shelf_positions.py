@@ -344,10 +344,11 @@ def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict
     all_ours = sorted({o for g in groups for o in g["ours"]})
     visited = [c for c in all_comps if str(c) in shelves_in]
     status_of = {c: (shelves_in[str(c)].get("s") or "failed") for c in visited}
-    # v2.4.3. Пустая полка у ЖИВОЙ карточки — не «карточки нет» и не сбой: с
-    # 22.09 WB у части товаров вообще не показывает блок «Похожие» (на странице
-    # только «Продавец рекомендует»; сверено вручную, анонимно и под входом
-    # покупателя ответ одинаково пустой). Это «полки нет» — отдельное состояние.
+    # v2.4.3. Пустая полка у ЖИВОЙ карточки — не «карточки нет»: с 22.09 WB
+    # через сайт отдаёт пустое тело у ~43 % живых карточек, устойчиво по товару
+    # (анонимно и под входом покупателя одинаково), хотя 21.09 те же полки были
+    # полными. Причина не установлена — пишем отдельное состояние «полки нет»,
+    # чтобы не выдавать это ни за удалённую карточку, ни за «нас там нет».
     cards_alive = recorded.get("cards") or {}
     no_shelf = [c for c in visited if status_of[c] == "missing" and str(c) in cards_alive]
     for c in no_shelf:
