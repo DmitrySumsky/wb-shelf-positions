@@ -386,6 +386,9 @@ def _groups_from_recorded(groups: list[dict], dest: int, recorded: dict) -> dict
         "failed_shelves": [str(c) for c in failed],
         "missing_shelves": [str(c) for c in missing],
         "noshelf_shelves": [str(c) for c in no_shelf],
+        # v2.5: полки, которых не было в плане сбора (завели после него). Книги
+        # брендов оставляют их пустыми сами (по «shelves»), остальным нужен список.
+        "unvisited_shelves": [str(c) for c in all_comps if str(c) not in shelves_in],
         "cards": {str(c): {"brand": (cards.get(str(c)) or {}).get("b", ""),
                            "name": (cards.get(str(c)) or {}).get("n", ""),
                            "supplierId": (cards.get(str(c)) or {}).get("sid")}

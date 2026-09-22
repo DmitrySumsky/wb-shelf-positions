@@ -73,6 +73,7 @@ KEEP_DATES = 90                   # сколько колонок истории
 NOT_IN_SHELF = "—"
 STATE_GONE = "нет карточки"
 STATE_FAIL = "ошибка сбора"
+STATE_NO_SHELF = "полки нет"      # v2.5: WB отдал пустую полку живой карточки
 
 COLOR_OURS = {"red": 0.85, "green": 0.94, "blue": 0.83}    # строка VEXOR
 COLOR_SEP = {"red": 0.15, "green": 0.15, "blue": 0.15}     # чёрный разделитель
@@ -173,8 +174,9 @@ def read_blocks(book) -> tuple[list[dict], list[list[str]]]:
 
 def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict:
     """{(блок, артикул, повтор): значение ячейки за сегодня}."""
-    failed = set(snapshot.get("failed_shelves", []))
+    failed = set(snapshot.get("failed_shelves", [])) | set(snapshot.get("unvisited_shelves", []))
     missing = set(snapshot.get("missing_shelves", []))
+    noshelf = set(snapshot.get("noshelf_shelves", []))
     positions = snapshot.get("positions", {})
     ours_of = {g["product"]: [str(x) for x in g["ours"]] for g in groups}
 
@@ -192,6 +194,8 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict:
                 out[key] = STATE_FAIL
             elif art in missing:
                 out[key] = STATE_GONE
+            elif art in noshelf:
+                out[key] = STATE_NO_SHELF
             else:
                 # Лучшая позиция среди наших карточек блока (обычно она одна).
                 got = [positions.get(o, {}).get(art) for o in our_list]
@@ -199,7 +203,7 @@ def cell_values(snapshot: dict, groups: list[dict], rows: list[dict]) -> dict:
                 out[key] = min(got) if got else NOT_IN_SHELF
         else:
             row_pos = positions.get(art, {})
-            checked = [c for c in row_pos if c not in failed]
+            checked = [c for c in row_pos if c not in failed and c not in noshelf]
             found = sum(1 for c in checked if row_pos.get(c))
             # «5 из 12», а не «5/12»: Google на USER_ENTERED превратил бы
             # «5/12» в дату 12 мая
@@ -414,7 +418,10 @@ def main() -> None:
     ap.add_argument("--snapshot-in", default=None,
                     help="взять готовый снапшот вместо обхода полок (отладка)")
     ap.add_argument("--dry-run", action="store_true", help="в таблицу не писать")
+    ap.add_argument("--from-browser", default=None,
+                    help="v2.5: запись расширения (JSON) вместо обхода WB из облака")
     args = ap.parse_args()
+    recorded = json.load(open(args.from_browser, encoding="utf-8")) if args.from_browser else None
 
     install_retries()
     client = ts.get_client(args.creds)
@@ -430,7 +437,7 @@ def main() -> None:
             snapshot = json.load(f)
     else:
         snapshot = sp.run_groups(groups, dest=args.dest, workers=args.workers,
-                                 max_positions=args.max_positions)
+                                 max_positions=args.max_positions, recorded=recorded)
         if args.save_snapshot:
             with open(args.save_snapshot, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)

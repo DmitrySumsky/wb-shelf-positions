@@ -57,6 +57,8 @@ import wb_config
 from vexor_shelves import install_retries
 
 PLAN_VERSION = 1
+# Источник групп общей книги («Аналитика цен WB»); в облаке — секрет SOURCE_ID.
+COMMON_SOURCE_ID = "1YWWqK2Fh9NTJCVW7j7xocChUf2Pu9oNnvi1_oqMPi_Q"
 MAX_POSITIONS = 600        # глубже 600-й позиции полку не листаем (как в облаке)
 
 
@@ -100,6 +102,33 @@ def build_plan(client, contour: str) -> dict:
                 books.append(f"{brand}: цены")
             except BaseException as exc:                     # noqa: BLE001
                 sp.log(f"ОШИБКА чтения цен {brand}: {exc.__class__.__name__}: {exc}")
+
+    # v2.5. Книги вне брендов: VEXOR (лист «Сводная» чужой книги) и общая книга
+    # (списки групп — таблица «Аналитика цен WB»). Полки и карточки тех же видов.
+    extra = (wb_config.CFG.get("contours") or {})[contour].get("extra", [])
+    extra_groups: list[tuple[str, list[dict]]] = []
+    if "vexor" in extra:
+        try:
+            import vexor_shelves as vs
+            vid = os.environ.get("VEXOR_SHEET_ID") or vs.VEXOR_SHEET_ID
+            vgroups, _rows = vs.read_blocks(client.open_by_key(vid))
+            extra_groups.append(("VEXOR: полки", vgroups))
+        except Exception as exc:                             # noqa: BLE001
+            sp.log(f"ОШИБКА чтения книги VEXOR: {exc.__class__.__name__}: {exc}")
+    if "common" in extra:
+        try:
+            sid = os.environ.get("SOURCE_ID") or COMMON_SOURCE_ID
+            cgroups, _skipped = ts.read_groups(client, sid, ts.SOURCE_TAB)
+            extra_groups.append(("Общая книга: полки и цены", cgroups))
+        except Exception as exc:                             # noqa: BLE001
+            sp.log(f"ОШИБКА чтения общей книги: {exc.__class__.__name__}: {exc}")
+    for label, groups in extra_groups:
+        for g in groups:
+            for comp in g["competitors"]:
+                shelves.setdefault(comp, set()).update(g["ours"])
+            cards.update(g["ours"])
+            cards.update(g["competitors"])
+        books.append(label)
 
     plan = {
         "v": PLAN_VERSION,
@@ -184,12 +213,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Сбор полок из браузера — облачная половина")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan")
-    p.add_argument("--contour", default="brands")
+    p.add_argument("--contour", default="all")
     p.add_argument("--out", default=None)
     p.add_argument("--push", action="store_true", help="положить план в хаб")
     p.add_argument("--creds", default=None)
     f = sub.add_parser("fetch")
-    f.add_argument("--contour", default="brands")
+    f.add_argument("--contour", default="all")
     f.add_argument("--out", default="browser_result.json")
     sub.add_parser("probe")
     args = ap.parse_args()

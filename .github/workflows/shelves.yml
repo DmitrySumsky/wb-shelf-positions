@@ -52,14 +52,16 @@ jobs:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
           SHELF_HUB_URL: ${{ secrets.SHELF_HUB_URL }}
           SHELF_HUB_KEY: ${{ secrets.SHELF_HUB_KEY }}
-        run: python browser_job.py plan --contour brands --push
+          SOURCE_ID: ${{ secrets.SOURCE_ID }}
+          VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
+        run: python browser_job.py plan --contour all --push
       - name: Напомнить про кнопку
         if: steps.probe.outputs.open != 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python notify.py "Полки и цены брендов ждут сбора: WB не пускает облако. Любая книга бренда → меню «Полки WB» → «🌐 Обновить все книги через браузер» (нужно расширение «Полки WB» в Chrome)."
+          python notify.py "Полки и цены брендов ждут сбора: WB не пускает облако. Нажмите значок расширения «Полки WB» в Chrome (или в любой книге бренда меню «Полки WB» → «🌐 Обновить все книги через браузер») — обновятся все книги полок и цен."
 
   # Общая книга «Анализ конкурентов ВБ авто»: матрица, сводка, история, цены.
   common:

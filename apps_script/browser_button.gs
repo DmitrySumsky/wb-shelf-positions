@@ -57,7 +57,7 @@ function browserUpdate() {
   var html =
     '<div style="font:14px/1.5 Arial,sans-serif">' +
     '<p>Сбор идёт в <b>вашем Chrome</b> расширением «Полки WB» и обновляет ' +
-    '<b>все книги брендов</b> — полки и цены.</p>' + lines.join('') +
+    '<b>все книги полок и цен</b> — бренды, VEXOR, общая книга.</p>' + lines.join('') +
     '<ol style="padding-left:18px;margin:6px 0">' +
     '<li>Нажмите кнопку — откроется вкладка WB.</li>' +
     '<li>Если WB покажет проверку — пройдите её.</li>' +

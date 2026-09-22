@@ -287,6 +287,8 @@ def main() -> None:
     ap.add_argument("--save-snapshot", default="snapshot_prices.json")
     ap.add_argument("--dry-run", action="store_true",
                     help="снять цены и сохранить снапшот, в таблицу не писать")
+    ap.add_argument("--from-browser", default=None,
+                    help="v2.5: запись расширения (JSON) вместо обхода WB из облака")
     args = ap.parse_args()
 
     if not args.sheet_id:
@@ -301,7 +303,12 @@ def main() -> None:
     sp.log(f"Групп: {len(groups)}; артикулов к съёму цены: {len(nm_ids)} "
            f"(строк в листе: {len(rows)}); строк источника пропущено: {len(skipped)}")
 
-    prices = fetch_prices(nm_ids, args.dest)
+    if args.from_browser:
+        import brand_prices                # лениво: brand_prices сам импортирует этот модуль
+        with open(args.from_browser, encoding="utf-8") as f:
+            prices = brand_prices.prices_from_recorded(json.load(f), nm_ids)
+    else:
+        prices = fetch_prices(nm_ids, args.dest)
     ok = sum(1 for v in prices.values() if isinstance(v, int))
     none = sum(1 for v in prices.values() if v == STATE_NONE)
     gone = sum(1 for v in prices.values() if v == STATE_GONE)

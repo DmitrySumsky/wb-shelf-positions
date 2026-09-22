@@ -12,7 +12,7 @@ on:
       contour:
         description: "контур книг (brands.json → contours)"
         required: false
-        default: "brands"
+        default: "all"
       who:
         description: "кто собирал (для сводки)"
         required: false
@@ -29,6 +29,8 @@ jobs:
     env:
       GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
       SHEET_ID: ${{ secrets.SHEET_ID }}
+      SOURCE_ID: ${{ secrets.SOURCE_ID }}
+      VEXOR_SHEET_ID: ${{ secrets.VEXOR_SHEET_ID }}
       SHELF_HUB_URL: ${{ secrets.SHELF_HUB_URL }}
       SHELF_HUB_KEY: ${{ secrets.SHELF_HUB_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -55,6 +57,22 @@ jobs:
         if: always() && steps.shelves.outcome != 'skipped'
         run: python brand_prices.py --brand all --from-browser browser_result.json --notify-fail
 
+      # v2.5: книги вне брендов — только когда они входят в контур.
+      - name: Полки в книге VEXOR
+        id: vexor
+        if: always() && steps.shelves.outcome != 'skipped' && contains(fromJSON('["all"]'), inputs.contour)
+        run: python vexor_shelves.py --from-browser browser_result.json
+
+      - name: Общая книга — матрица, сводка, история
+        id: common
+        if: always() && steps.shelves.outcome != 'skipped' && contains(fromJSON('["all"]'), inputs.contour)
+        run: python to_sheets.py --from-browser browser_result.json
+
+      - name: Общая книга — цены
+        id: common_prices
+        if: always() && steps.shelves.outcome != 'skipped' && contains(fromJSON('["all"]'), inputs.contour)
+        run: python prices_to_sheets.py --from-browser browser_result.json
+
       - name: Новый план на следующий сбор
         if: always()
         run: python browser_job.py plan --contour "$CONTOUR" --push
@@ -62,7 +80,7 @@ jobs:
       - name: Сводка в Telegram
         if: always()
         run: |
-          python notify.py "Полки и цены обновлены из браузера${WHO:+ (собирал(а): $WHO)} — полки: ${{ steps.shelves.outcome }}, цены: ${{ steps.prices.outcome }}. Журнал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python notify.py "Полки и цены обновлены из браузера${WHO:+ (собирал(а): $WHO)} — бренды: полки ${{ steps.shelves.outcome }}, цены ${{ steps.prices.outcome }}; VEXOR ${{ steps.vexor.outcome }}; общая книга ${{ steps.common.outcome }} / цены ${{ steps.common_prices.outcome }}. Журнал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: actions/upload-artifact@v4
         if: always()

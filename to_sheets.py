@@ -163,8 +163,9 @@ MATRIX_HEAD_ROWS = 2      # строка 1 — даты, строка 2 — на
 
 def build_entries(snap: dict, our_brands: list[str]) -> list[dict]:
     """Замер в виде строк «полка конкурента → позиции наших брендов»."""
-    failed = set(snap.get("failed_shelves", []))
+    failed = set(snap.get("failed_shelves", [])) | set(snap.get("unvisited_shelves", []))
     missing = set(snap.get("missing_shelves", []))
+    noshelf = set(snap.get("noshelf_shelves", []))
     entries = []
     for g in snap["groups"]:
         our_by_brand = {}
@@ -174,7 +175,8 @@ def build_entries(snap: dict, our_brands: list[str]) -> list[dict]:
             # Три разных случая, которые нельзя смешивать: полка не проверена
             # из-за сбоя, карточки конкурента больше нет на WB, и «нас там нет».
             flag = ("ошибка сбора" if str(comp) in failed else
-                    "нет карточки" if str(comp) in missing else None)
+                    "нет карточки" if str(comp) in missing else
+                    "полки нет" if str(comp) in noshelf else None)
             cells = []
             for br in our_brands:
                 our = our_by_brand.get(br.strip().lower())
@@ -370,7 +372,8 @@ def write_summary(book, snap: dict) -> None:
     header = ["Товар", "Наш бренд", "Наш артикул", "Полок проверено", "Найдено",
               "Лучшая", "Средняя", "Худшая", "Полок не проверено"]
     rows = [header]
-    skip = set(snap.get("failed_shelves", [])) | set(snap.get("missing_shelves", []))
+    skip = (set(snap.get("failed_shelves", [])) | set(snap.get("missing_shelves", []))
+            | set(snap.get("noshelf_shelves", [])) | set(snap.get("unvisited_shelves", [])))
     for g in snap["groups"]:
         # Непроверенные полки из знаменателя исключаем — иначе «найдено 4 из 6»
         # читалось бы как «в двух полках нас нет», хотя мы их просто не проверили.
@@ -459,14 +462,17 @@ def append_history(book, snap: dict) -> int:
 
     used = sorted(row_of[(str(o), str(c))] for _, o, c in pairs)
     first, last = used[0], used[-1]
-    failed = set(snap.get("failed_shelves", []))
+    failed = set(snap.get("failed_shelves", [])) | set(snap.get("unvisited_shelves", []))
     missing = set(snap.get("missing_shelves", []))
+    noshelf = set(snap.get("noshelf_shelves", []))
     column = [[""] for _ in range(last - first + 1)]
     for _, our, comp in pairs:
         if str(comp) in failed:
             value = "ошибка сбора"    # полку не проверили, а не «нас там нет»
         elif str(comp) in missing:
             value = "нет карточки"    # артикул конкурента удалён с WB
+        elif str(comp) in noshelf:
+            value = "полки нет"       # v2.5: WB отдал пустую полку живой карточки
         else:
             pos = snap["positions"].get(str(our), {}).get(str(comp))
             value = pos if pos else "—"
@@ -492,6 +498,8 @@ def main() -> None:
     ap.add_argument("--dest", type=int, default=None)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--dry-run", action="store_true", help="собрать и сохранить, в таблицу не писать")
+    ap.add_argument("--from-browser", default=None,
+                    help="v2.5: запись расширения (JSON) вместо обхода WB из облака")
     args = ap.parse_args()
 
     if not args.sheet_id:
@@ -512,8 +520,10 @@ def main() -> None:
             print("  пропуск:", s)
         if len(skipped) > 15:
             print(f"  … и ещё {len(skipped) - 15}")
+        recorded = (json.load(open(args.from_browser, encoding="utf-8"))
+                    if args.from_browser else None)
         snap = sp.run_groups(groups, dest=args.dest or sp.DEST_MOSCOW,
-                             workers=args.workers)
+                             workers=args.workers, recorded=recorded)
         snap["skipped"] = skipped
         if args.save_snapshot:
             with open(args.save_snapshot, "w", encoding="utf-8") as f:
