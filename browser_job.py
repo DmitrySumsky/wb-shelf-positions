@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 import requests
@@ -159,7 +160,21 @@ def hub() -> tuple[str, str]:
     return url, key
 
 
-def hub_call(action: str, contour: str, body: dict | None = None) -> dict:
+def hub_call(action: str, contour: str, body: dict | None = None, tries: int = 3) -> dict:
+    """v2.5.2. Запрос в хаб с повтором: редиректы Google изредка отдают ответ не того
+    обработчика («неизвестное действие put_plan»), со второй попытки проходит (22.09.2026)."""
+    last = None
+    for attempt in range(tries):
+        try:
+            return _hub_call_once(action, contour, body)
+        except SystemExit as exc:
+            last = exc
+            sp.log(f"Хаб, попытка {attempt + 1} из {tries}: {exc}")
+            time.sleep(5 * (attempt + 1))
+    raise last
+
+
+def _hub_call_once(action: str, contour: str, body: dict | None = None) -> dict:
     """Запрос в хаб. Ответ Apps Script приходит после 302 на googleusercontent —
     requests проходит его сам (POST при этом штатно становится GET)."""
     url, key = hub()
