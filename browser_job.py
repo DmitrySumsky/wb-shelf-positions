@@ -60,6 +60,8 @@ from vexor_shelves import install_retries
 PLAN_VERSION = 1
 # Источник групп общей книги («Аналитика цен WB»); в облаке — секрет SOURCE_ID.
 COMMON_SOURCE_ID = "1YWWqK2Fh9NTJCVW7j7xocChUf2Pu9oNnvi1_oqMPi_Q"
+# Книга хаба (служебная, «Полки WB — хаб сбора из браузера»); ID не секрет.
+HUB_BOOK_ID = os.environ.get("SHELF_HUB_BOOK_ID", "1lXwyWSC61WBm5Ss-7ak--ZS6zRUSjxHHLXrFpgJXPIk")
 MAX_POSITIONS = 600        # глубже 600-й позиции полку не листаем (как в облаке)
 
 
@@ -209,6 +211,25 @@ def _hub_call_once(action: str, contour: str, body: dict | None = None) -> dict:
     return data
 
 
+def read_result_sheet(contour: str, creds: str | None = None) -> dict | None:
+    """v2.5.3. Итог сбора прямо из листа «Итоги» книги хаба (сервисный аккаунт — читатель).
+
+    Веб-приложение отдаёт итог всех книг (~180 КБ) за минуту с лишним, и из
+    GitHub Actions такой ответ приходит 404-й страницей Google (22.09.2026).
+    Строка листа: [контур, когда, кто, куски JSON...].
+    """
+    ws = ts.get_client(creds).open_by_key(HUB_BOOK_ID).worksheet("Итоги")
+    for row in ws.get_all_values()[1:]:
+        if row and row[0] == contour:
+            text = "".join(row[3:])
+            if not text:
+                return None
+            rec = json.loads(text)
+            rec.setdefault("who", row[2])
+            return rec
+    return None
+
+
 # --------------------------------------------------------------------- probe
 
 def probe() -> bool:
@@ -256,8 +277,13 @@ def main() -> None:
         return
 
     if args.cmd == "fetch":
-        res = hub_call("get_result", args.contour)
-        rec = res.get("result")
+        rec = None
+        try:
+            rec = read_result_sheet(args.contour)
+        except Exception as exc:                               # noqa: BLE001
+            sp.log(f"Лист «Итоги» хаба не прочитался ({exc.__class__.__name__}: {exc}) — беру через веб-приложение")
+        if rec is None:
+            rec = hub_call("get_result", args.contour).get("result")
         if not rec or not rec.get("shelves"):
             raise SystemExit("В хабе нет записи сбора по контуру " + args.contour)
         with open(args.out, "w", encoding="utf-8") as fh:
