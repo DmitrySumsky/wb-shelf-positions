@@ -76,6 +76,14 @@ MSK = timezone(timedelta(hours=3))
 _print_lock = threading.Lock()
 
 
+class ShelvesClosed(RuntimeError):
+    """v2.5.4 (25.09.2026). Ни одна полка не отдалась — витрина закрыта, а не сбой.
+
+    Писать такой прогон в книгу нельзя: колонка целиком из «ошибки сбора» —
+    не замер, а дырка. Бросается до повторного прохода, чтобы не жечь минуты.
+    """
+
+
 def log(msg: str) -> None:
     with _print_lock:
         print(f"[{datetime.now(MSK):%H:%M:%S}] {msg}", flush=True)
@@ -266,6 +274,12 @@ def run_groups(groups: list[dict], dest: int = DEST_MOSCOW, workers: int = 4,
     # Полка, не отдавшаяся по сети, — это НЕ «нас там нет». Добиваем отдельным
     # проходом. Мёртвый артикул (пустое тело) не ретраим — там нечего добивать.
     failed = [c for c, r in shelves.items() if r["status"] == "failed"]
+    # v2.5.4. Не отдалась ни одна — WB закрыл полки этому клиенту. 25.09.2026
+    # карточки облаку открыли, полки нет: прогон 25 минут добивал закрытое и
+    # записал во все книги колонку из «ошибки сбора».
+    if all_comps and len(failed) == len(all_comps):
+        raise ShelvesClosed(f"не отдалась ни одна из {len(all_comps)} полок — "
+                            f"WB закрыл полки для этого клиента, колонку не пишу")
     if failed:
         log(f"Повторный проход по {len(failed)} не отдавшимся полкам…")
         s = _session()

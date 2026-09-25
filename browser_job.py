@@ -233,17 +233,32 @@ def read_result_sheet(contour: str, creds: str | None = None) -> dict | None:
 # --------------------------------------------------------------------- probe
 
 def probe() -> bool:
-    """Открыта ли витрина для этого клиента: один запрос карточки."""
-    try:
-        r = requests.get(sp.CARD_URL, params={"appType": "1", "curr": "rub",
-                                               "dest": str(wb_config.DEST), "spp": "30",
-                                               "nm": "219503618"},
-                         headers=sp.HEADERS, timeout=25)
-    except requests.RequestException as exc:
-        print(f"Витрина WB не отвечает: {exc.__class__.__name__}")
-        return False
-    ok = r.status_code == 200
-    print(f"Витрина WB для облака: {'открыта' if ok else 'ЗАКРЫТА'} (HTTP {r.status_code})")
+    """Открыта ли витрина для этого клиента: карточка И полка.
+
+    v2.5.4 (25.09.2026). Раньше спрашивали только карточку. 25.09 WB открыл
+    облаку `card.wb.ru` (200), а `recom.wb.ru` держал закрытым (403): проверка
+    сказала «открыта», облако 25 минут обходило закрытые полки и записало во
+    все книги «ошибку сбора». Адреса открываются неравномерно — проверяем оба.
+    """
+    checks = [
+        ("карточка", sp.CARD_URL, {"appType": "1", "curr": "rub",
+                                   "dest": str(wb_config.DEST), "spp": "30",
+                                   "nm": "219503618"}),
+        ("полка", sp.RECOM_URL, dict(sp.SHELF_PARAMS, query="219503618", page="1",
+                                     dest=str(wb_config.DEST))),
+    ]
+    ok = True
+    for name, url, params in checks:
+        try:
+            r = requests.get(url, params=params, headers=sp.HEADERS, timeout=25)
+        except requests.RequestException as exc:
+            print(f"Витрина WB, {name}: не отвечает ({exc.__class__.__name__})")
+            ok = False
+            continue
+        print(f"Витрина WB, {name}: {'открыта' if r.status_code == 200 else 'ЗАКРЫТА'} "
+              f"(HTTP {r.status_code})")
+        ok = ok and r.status_code == 200
+    print(f"Витрина WB для облака: {'открыта' if ok else 'ЗАКРЫТА'}")
     return ok
 
 
